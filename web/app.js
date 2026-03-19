@@ -199,6 +199,12 @@ updateViewportValue();
 syncTouchTuningUI();
 syncMouseTuningUI();
 installControlPanelUI();
+elements.remoteVideo?.addEventListener("loadedmetadata", () => {
+  const maybePlay = elements.remoteVideo.play?.();
+  if (maybePlay && typeof maybePlay.catch === "function") {
+    maybePlay.catch(() => {});
+  }
+});
 
 elements.connectButton.addEventListener("click", () => {
   connect(elements.wsUrl.value.trim());
@@ -623,6 +629,10 @@ function maybeCreatePeerConnection() {
     if (stream) {
       state.remoteStream = stream;
       elements.remoteVideo.srcObject = stream;
+      const maybePlay = elements.remoteVideo.play?.();
+      if (maybePlay && typeof maybePlay.catch === "function") {
+        maybePlay.catch(() => {});
+      }
       state.videoTrackFound = true;
       elements.stageOverlay.classList.add("hidden");
       logEvent("VisIVO Connect track attached");

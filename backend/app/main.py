@@ -94,6 +94,50 @@ def _pc_config_from_env() -> RTCConfiguration:
     return RTCConfiguration(iceServers=servers)
 
 
+def _prefer_safari_friendly_video_codecs(pc: RTCPeerConnection) -> None:
+    """Prefer H264 in the server offer for better Safari interoperability."""
+    try:
+        # Imported lazily to avoid hard dependency on internals during startup.
+        from aiortc import RTCRtpSender  # type: ignore
+
+        capabilities = RTCRtpSender.getCapabilities("video")
+        codecs = list(getattr(capabilities, "codecs", []) or [])
+        if not codecs:
+            return
+
+        def _codec_rank(codec: Any) -> tuple[int, int, int]:
+            mime = str(getattr(codec, "mimeType", "")).lower()
+            params = getattr(codec, "parameters", {}) or {}
+            if "h264" in mime:
+                packetization_mode = str(params.get("packetization-mode", "0"))
+                profile_level_id = str(params.get("profile-level-id", "")).lower()
+                baseline_like = profile_level_id.startswith(("42", "4d", "58"))
+                return (0, 0 if packetization_mode == "1" else 1, 0 if baseline_like else 1)
+            if "vp8" in mime:
+                return (1, 0, 0)
+            if "vp9" in mime:
+                return (2, 0, 0)
+            if "av1" in mime:
+                return (3, 0, 0)
+            if "rtx" in mime:
+                return (8, 0, 0)
+            return (5, 0, 0)
+
+        ordered = sorted(codecs, key=_codec_rank)
+        applied = False
+        for transceiver in pc.getTransceivers():
+            if getattr(transceiver, "kind", None) != "video":
+                continue
+            if hasattr(transceiver, "setCodecPreferences"):
+                transceiver.setCodecPreferences(ordered)
+                applied = True
+        if applied:
+            names = [str(getattr(codec, "mimeType", "unknown")) for codec in ordered]
+            log.warning("Applied video codec preference (H264-first): %s", names)
+    except Exception:
+        log.exception("Failed to apply Safari-friendly video codec preference")
+
+
 def _normalize_description(payload: dict[str, Any]) -> RTCSessionDescription | None:
     if "sdp" in payload and isinstance(payload["sdp"], dict):
         inner = payload["sdp"]
@@ -135,6 +179,7 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
 
     video_track = LatestFrameVideoTrack(session)
     pc.addTrack(video_track)
+    _prefer_safari_friendly_video_codecs(pc)
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
