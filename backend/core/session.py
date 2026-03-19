@@ -53,6 +53,7 @@ class RemoteRenderSession:
         self._last_input_ns = 0
         self._last_render_finished_ns = 0
         self._renderer_lock = threading.RLock()
+        self._closed = False
         self.last_activity_ns = time.time_ns()
         self.target_stream_fps = 30.0
 
@@ -62,7 +63,14 @@ class RemoteRenderSession:
         self.request_render()
 
     def close(self) -> None:
-        return
+        with self._renderer_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self.renderer.close()
+            except Exception:
+                pass
 
     def request_render(self) -> None:
         self.last_activity_ns = time.time_ns()
@@ -256,6 +264,8 @@ class RemoteRenderSession:
         return self._latest_frame
 
     def render_if_needed(self, force: bool = False) -> FramePacket | None:
+        if self._closed:
+            return None
         now_ns = time.time_ns()
         if not force and self._last_render_finished_ns:
             elapsed_s = (now_ns - self._last_render_finished_ns) / 1e9

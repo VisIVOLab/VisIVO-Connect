@@ -36,6 +36,7 @@ class VTKDatacubeRenderer:
         self._log = logging.getLogger("uvicorn.error")
         self._render_window_backend = "unknown"
         self._render_window_request = os.getenv("VISIVO_VTK_RENDER_WINDOW", "auto").strip().lower()
+        self._closed = False
 
         self.renderer = vtk.vtkRenderer()
         self.render_window = self._create_render_window()
@@ -695,6 +696,8 @@ class VTKDatacubeRenderer:
         self.renderer.ResetCameraClippingRange()
 
     def render_bgr_frame(self) -> tuple[np.ndarray, int, int]:
+        if self._closed:
+            raise RuntimeError("renderer is closed")
         started_ns = time.time_ns()
         self.render_window.Render()
         self.window_to_image.Modified()
@@ -710,6 +713,11 @@ class VTKDatacubeRenderer:
         self._handle_black_frame_detection(bgr)
         finished_ns = time.time_ns()
         return bgr, started_ns, finished_ns
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
 
     def _handle_black_frame_detection(self, bgr: np.ndarray) -> None:
         if self.visualization_mode != "volume" or self.volume_render_mode == "slice":

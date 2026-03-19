@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import av
 from aiortc import VideoStreamTrack
@@ -26,6 +27,10 @@ class LatestFrameVideoTrack(VideoStreamTrack):
         # vtkCocoaRenderWindow on macOS must render on main thread.
         force_main_thread = os.getenv("VISIVO_VTK_MAIN_THREAD", "1" if sys.platform == "darwin" else "0") == "1"
         self._render_on_main_thread = force_main_thread
+        self._render_executor: ThreadPoolExecutor | None = None
+        if not self._render_on_main_thread:
+            # Keep VTK/EGL calls on a stable worker thread to avoid context issues.
+            self._render_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="visivo-render")
         self._first_frame_logged = False
         self._empty_cycles = 0
 
@@ -48,10 +53,11 @@ class LatestFrameVideoTrack(VideoStreamTrack):
                     frame_packet = self.session.render_if_needed(force=True)
             else:
                 # Keep RTC timers responsive even if VTK render is expensive.
-                frame_packet = await asyncio.to_thread(self.session.render_if_needed)
+                loop = asyncio.get_running_loop()
+                frame_packet = await loop.run_in_executor(self._render_executor, self.session.render_if_needed)
                 if frame_packet is None:
                     await asyncio.sleep(0.01)
-                    frame_packet = await asyncio.to_thread(self.session.render_if_needed, True)
+                    frame_packet = await loop.run_in_executor(self._render_executor, self.session.render_if_needed, True)
         except Exception:
             self._log.exception("render_if_needed failed; keeping stream alive with fallback frame")
 
@@ -114,3 +120,9 @@ class LatestFrameVideoTrack(VideoStreamTrack):
         blank.time_base = time_base
         self._last_emit_ns = time.time_ns()
         return blank
+
+    def stop(self) -> None:
+        super().stop()
+        if self._render_executor is not None:
+            self._render_executor.shutdown(wait=False, cancel_futures=True)
+            self._render_executor = None
