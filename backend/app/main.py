@@ -3,12 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
 
-import aioice.stun
 from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceCandidate, RTCIceServer, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -40,43 +38,6 @@ cleanup_task = None
 log = logging.getLogger("uvicorn.error")
 
 
-def _install_aioice_retry_guard() -> None:
-    """Avoid noisy asyncio callback crashes when STUN retries outlive closed transports.
-
-    Seen on Python 3.11 + aioice where Transaction.__retry may run after underlying
-    DatagramTransport / loop internals are already torn down, raising:
-    - AttributeError: 'NoneType' object has no attribute 'sendto'
-    - AttributeError: 'NoneType' object has no attribute 'call_exception_handler'
-    """
-
-    transaction_cls = aioice.stun.Transaction
-    original = getattr(transaction_cls, "_Transaction__retry", None)
-    if not callable(original) or getattr(transaction_cls, "_visivo_retry_guard_installed", False):
-        return
-
-    def _safe_retry(self: aioice.stun.Transaction) -> None:  # type: ignore[name-defined]
-        try:
-            original(self)
-        except AttributeError as exc:
-            message = str(exc)
-            if "sendto" not in message and "call_exception_handler" not in message:
-                raise
-            future = getattr(self, "_Transaction__future", None)
-            if future is not None and not future.done():
-                future.set_exception(aioice.stun.TransactionTimeout())
-        except RuntimeError as exc:
-            # Defensive path for late callbacks on a closed event loop.
-            if "Event loop is closed" not in str(exc):
-                raise
-            future = getattr(self, "_Transaction__future", None)
-            if future is not None and not future.done():
-                future.set_exception(aioice.stun.TransactionTimeout())
-
-    setattr(transaction_cls, "_Transaction__retry", _safe_retry)
-    setattr(transaction_cls, "_visivo_retry_guard_installed", True)
-    log.warning("Installed aioice retry guard for late STUN callbacks")
-
-
 def _is_authorized(token: str | None, expected: str | None) -> bool:
     if not expected:
         return True
@@ -93,50 +54,6 @@ def _pc_config_from_env() -> RTCConfiguration:
         for entry in config.ice_servers
     ]
     return RTCConfiguration(iceServers=servers)
-
-
-def _prefer_safari_friendly_video_codecs(pc: RTCPeerConnection) -> None:
-    """Prefer H264 in the server offer for better Safari interoperability."""
-    try:
-        # Imported lazily to avoid hard dependency on internals during startup.
-        from aiortc import RTCRtpSender  # type: ignore
-
-        capabilities = RTCRtpSender.getCapabilities("video")
-        codecs = list(getattr(capabilities, "codecs", []) or [])
-        if not codecs:
-            return
-
-        def _codec_rank(codec: Any) -> tuple[int, int, int]:
-            mime = str(getattr(codec, "mimeType", "")).lower()
-            params = getattr(codec, "parameters", {}) or {}
-            if "h264" in mime:
-                packetization_mode = str(params.get("packetization-mode", "0"))
-                profile_level_id = str(params.get("profile-level-id", "")).lower()
-                baseline_like = profile_level_id.startswith(("42", "4d", "58"))
-                return (0, 0 if packetization_mode == "1" else 1, 0 if baseline_like else 1)
-            if "vp8" in mime:
-                return (1, 0, 0)
-            if "vp9" in mime:
-                return (2, 0, 0)
-            if "av1" in mime:
-                return (3, 0, 0)
-            if "rtx" in mime:
-                return (8, 0, 0)
-            return (5, 0, 0)
-
-        ordered = sorted(codecs, key=_codec_rank)
-        applied = False
-        for transceiver in pc.getTransceivers():
-            if getattr(transceiver, "kind", None) != "video":
-                continue
-            if hasattr(transceiver, "setCodecPreferences"):
-                transceiver.setCodecPreferences(ordered)
-                applied = True
-        if applied:
-            names = [str(getattr(codec, "mimeType", "unknown")) for codec in ordered]
-            log.warning("Applied video codec preference (H264-first): %s", names)
-    except Exception:
-        log.exception("Failed to apply Safari-friendly video codec preference")
 
 
 def _normalize_description(payload: dict[str, Any]) -> RTCSessionDescription | None:
@@ -180,8 +97,6 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
 
     video_track = LatestFrameVideoTrack(session)
     pc.addTrack(video_track)
-    if os.getenv("VISIVO_PREFER_H264", "0").strip().lower() in {"1", "true", "yes", "on"}:
-        _prefer_safari_friendly_video_codecs(pc)
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
@@ -438,7 +353,6 @@ async def on_shutdown() -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     global cleanup_task
-    _install_aioice_retry_guard()
 
     async def _cleanup_loop() -> None:
         while True:

@@ -99,6 +99,7 @@ const state = {
   shouldReconnect: true,
   pc: null,
   iceServers: null,
+  pendingRemoteIceCandidates: [],
   remoteStream: null,
   sessionId: createSessionId(),
   connectionState: "connecting",
@@ -172,6 +173,15 @@ const state = {
     smoothPanDx: 0,
     smoothPanDy: 0,
     smoothPinchLog: 0,
+  },
+  rtc: {
+    offerReceivedAtMs: 0,
+    connectedAtMs: 0,
+    queuedRemoteIce: 0,
+    appliedRemoteIce: 0,
+    failedRemoteIce: 0,
+    restartTimer: 0,
+    lastRestartAtMs: 0,
   },
 };
 
@@ -552,6 +562,7 @@ function handleSocketMessage(raw) {
   switch (message.type) {
     case "offer":
     case "webrtc.offer":
+      state.rtc.offerReceivedAtMs = performance.now();
       updateIceServersFromSignal(message.iceServers);
       maybeCreatePeerConnection();
       applyRemoteDescription(message.description || message);
@@ -653,11 +664,19 @@ function maybeCreatePeerConnection() {
   pc.addEventListener("connectionstatechange", () => {
     logEvent(`RTC ${pc.connectionState}`);
     if (pc.connectionState === "connected") {
+      state.rtc.connectedAtMs = performance.now();
+      if (state.rtc.offerReceivedAtMs > 0) {
+        const connectMs = Math.max(0, state.rtc.connectedAtMs - state.rtc.offerReceivedAtMs);
+        logEvent(
+          `RTC connected in ${Math.round(connectMs)}ms · ICE queued=${state.rtc.queuedRemoteIce} applied=${state.rtc.appliedRemoteIce} failed=${state.rtc.failedRemoteIce}`
+        );
+      }
       elements.stageOverlay.classList.add("hidden");
       setConnectionState("connected", "ok");
     }
     if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
       setConnectionState("reconnecting", "warn", "RTC reconnecting");
+      scheduleRtcRestart(`rtc-${pc.connectionState}`);
     }
   });
 
@@ -673,6 +692,7 @@ async function applyRemoteDescription(payload) {
   }
 
   await pc.setRemoteDescription(sdp);
+  await flushPendingRemoteIceCandidates(pc);
   if (sdp.type === "offer") {
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
@@ -687,7 +707,12 @@ async function applyRemoteDescription(payload) {
 async function addIceCandidate(payload) {
   const pc = maybeCreatePeerConnection();
   const candidate = payload?.candidate ?? payload;
-  if (!candidate || !pc.remoteDescription) {
+  if (!candidate) {
+    return;
+  }
+  if (!pc.remoteDescription) {
+    state.pendingRemoteIceCandidates.push(candidate);
+    state.rtc.queuedRemoteIce += 1;
     return;
   }
   try {
@@ -697,13 +722,59 @@ async function addIceCandidate(payload) {
       logEvent(`Remote ICE candidate (${type})`);
     }
     await pc.addIceCandidate(candidate);
+    state.rtc.appliedRemoteIce += 1;
   } catch (error) {
     console.warn("Failed to add ICE candidate", error);
+    state.rtc.failedRemoteIce += 1;
     logEvent("Failed to add remote ICE candidate");
   }
 }
 
+async function flushPendingRemoteIceCandidates(pc) {
+  if (!pc?.remoteDescription || state.pendingRemoteIceCandidates.length === 0) {
+    return;
+  }
+  const queued = state.pendingRemoteIceCandidates.splice(0, state.pendingRemoteIceCandidates.length);
+  for (const candidate of queued) {
+    try {
+      if (candidate && typeof candidate.candidate === "string") {
+        const typeMatch = candidate.candidate.match(/\btyp\s+([a-z]+)/i);
+        const type = typeMatch ? typeMatch[1] : "unknown";
+        logEvent(`Remote ICE candidate (${type})`);
+      }
+      await pc.addIceCandidate(candidate);
+      state.rtc.appliedRemoteIce += 1;
+    } catch (error) {
+      console.warn("Failed to add queued ICE candidate", error);
+      state.rtc.failedRemoteIce += 1;
+      logEvent("Failed to add queued remote ICE candidate");
+    }
+  }
+}
+
+function scheduleRtcRestart(reason) {
+  const now = performance.now();
+  if (state.rtc.restartTimer) {
+    return;
+  }
+  if (now - state.rtc.lastRestartAtMs < 1500) {
+    return;
+  }
+  state.rtc.restartTimer = window.setTimeout(() => {
+    state.rtc.restartTimer = 0;
+    state.rtc.lastRestartAtMs = performance.now();
+    logEvent(`RTC restart (${reason})`);
+    if (!state.wsUrl) {
+      return;
+    }
+    disconnect(false);
+    openSocket();
+  }, 250);
+}
+
 function cleanupPeerConnection() {
+  clearTimeout(state.rtc.restartTimer);
+  state.rtc.restartTimer = 0;
   clearTimeout(state.pendingInteractionEnd);
   if (state.touchGesture.rafId) {
     cancelAnimationFrame(state.touchGesture.rafId);
@@ -729,6 +800,12 @@ function cleanupPeerConnection() {
     } catch {}
   }
   state.pc = null;
+  state.pendingRemoteIceCandidates = [];
+  state.rtc.offerReceivedAtMs = 0;
+  state.rtc.connectedAtMs = 0;
+  state.rtc.queuedRemoteIce = 0;
+  state.rtc.appliedRemoteIce = 0;
+  state.rtc.failedRemoteIce = 0;
   state.remoteStream = null;
   state.videoTrackFound = false;
   elements.remoteVideo.srcObject = null;
