@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -179,7 +180,8 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
 
     video_track = LatestFrameVideoTrack(session)
     pc.addTrack(video_track)
-    _prefer_safari_friendly_video_codecs(pc)
+    if os.getenv("VISIVO_PREFER_H264", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        _prefer_safari_friendly_video_codecs(pc)
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
