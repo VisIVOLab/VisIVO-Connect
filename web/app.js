@@ -51,7 +51,44 @@ const elements = {
   hqModeButton: document.getElementById("hqModeButton"),
   eventLog: document.getElementById("eventLog"),
   clearLogButton: document.getElementById("clearLogButton"),
+  metricsStatus: document.getElementById("metricsStatus"),
+  metricsSessionId: document.getElementById("metricsSessionId"),
+  metricsVisualizationMode: document.getElementById("metricsVisualizationMode"),
+  metricsDataset: document.getElementById("metricsDataset"),
+  metricsFirstFrameLatency: document.getElementById("metricsFirstFrameLatency"),
+  metricsInteractiveFps: document.getElementById("metricsInteractiveFps"),
+  metricsHighQualityRenderTime: document.getElementById("metricsHighQualityRenderTime"),
+  metricsMemoryRss: document.getElementById("metricsMemoryRss"),
+  metricsFitsOpen: document.getElementById("metricsFitsOpen"),
+  metricsHduSelect: document.getElementById("metricsHduSelect"),
+  metricsSanitizeConvert: document.getElementById("metricsSanitizeConvert"),
+  metricsVtkBuild: document.getElementById("metricsVtkBuild"),
+  metricsFitsTotal: document.getElementById("metricsFitsTotal"),
+  touchRotateSensitivity: document.getElementById("touchRotateSensitivity"),
+  touchRotateSensitivityValue: document.getElementById("touchRotateSensitivityValue"),
+  touchPanSensitivity: document.getElementById("touchPanSensitivity"),
+  touchPanSensitivityValue: document.getElementById("touchPanSensitivityValue"),
+  touchZoomSensitivity: document.getElementById("touchZoomSensitivity"),
+  touchZoomSensitivityValue: document.getElementById("touchZoomSensitivityValue"),
+  touchDeadZonePx: document.getElementById("touchDeadZonePx"),
+  touchDeadZonePxValue: document.getElementById("touchDeadZonePxValue"),
+  touchMoveClampPx: document.getElementById("touchMoveClampPx"),
+  touchMoveClampPxValue: document.getElementById("touchMoveClampPxValue"),
+  touchPinchClampPercent: document.getElementById("touchPinchClampPercent"),
+  touchPinchClampPercentValue: document.getElementById("touchPinchClampPercentValue"),
+  mouseRotateSensitivity: document.getElementById("mouseRotateSensitivity"),
+  mouseRotateSensitivityValue: document.getElementById("mouseRotateSensitivityValue"),
+  mousePanSensitivity: document.getElementById("mousePanSensitivity"),
+  mousePanSensitivityValue: document.getElementById("mousePanSensitivityValue"),
+  mouseZoomSensitivity: document.getElementById("mouseZoomSensitivity"),
+  mouseZoomSensitivityValue: document.getElementById("mouseZoomSensitivityValue"),
+  mouseMoveClampPx: document.getElementById("mouseMoveClampPx"),
+  mouseMoveClampPxValue: document.getElementById("mouseMoveClampPxValue"),
+  controlDrawerToggle: document.getElementById("controlDrawerToggle"),
+  controlDrawerClose: document.getElementById("controlDrawerClose"),
 };
+const controlTabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
+const controlTabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
 
 const state = {
   ws: null,
@@ -98,6 +135,44 @@ const state = {
       bounds: [0, 1, 0, 1, 0, 1],
     },
   },
+  ui: {
+    activeTab: "session",
+  },
+  metrics: {
+    pollTimer: 0,
+    pending: false,
+    lastSessionId: "",
+  },
+  touch: {
+    rotateSensitivity: 0.45,
+    panSensitivity: 0.4,
+    zoomSensitivity: 0.35,
+    deadZonePx: 2,
+    moveClampPx: 24,
+    pinchClampPercent: 5,
+    pinchDeadZonePercent: 1.2,
+    minSendIntervalMs: 16,
+    rotateSmoothTauMs: 24,
+    panSmoothTauMs: 30,
+    pinchSmoothTauMs: 38,
+  },
+  mouse: {
+    rotateSensitivity: 0.75,
+    panSensitivity: 0.6,
+    zoomSensitivity: 0.85,
+    moveClampPx: 20,
+    deadZonePx: 0.75,
+  },
+  touchGesture: {
+    rafId: 0,
+    pending: false,
+    lastFlushTs: 0,
+    smoothRotateDx: 0,
+    smoothRotateDy: 0,
+    smoothPanDx: 0,
+    smoothPanDy: 0,
+    smoothPinchLog: 0,
+  },
 };
 
 const DEFAULT_WS_URL = "/ws";
@@ -121,6 +196,9 @@ setMode("interactive", false);
 setConnectionState("connecting", "warn");
 logEvent("Ready. Connect to begin.");
 updateViewportValue();
+syncTouchTuningUI();
+syncMouseTuningUI();
+installControlPanelUI();
 
 elements.connectButton.addEventListener("click", () => {
   connect(elements.wsUrl.value.trim());
@@ -163,6 +241,56 @@ elements.targetFps.addEventListener("input", () => {
   state.renderParams.targetFps = Number(elements.targetFps.value);
   elements.targetFpsValue.textContent = formatFps(state.renderParams.targetFps);
   sendRenderParams();
+});
+
+elements.touchRotateSensitivity?.addEventListener("input", () => {
+  state.touch.rotateSensitivity = clampFloat(Number(elements.touchRotateSensitivity.value), 0.1, 1.5, 0.45);
+  syncTouchTuningUI();
+});
+
+elements.touchPanSensitivity?.addEventListener("input", () => {
+  state.touch.panSensitivity = clampFloat(Number(elements.touchPanSensitivity.value), 0.1, 1.5, 0.4);
+  syncTouchTuningUI();
+});
+
+elements.touchZoomSensitivity?.addEventListener("input", () => {
+  state.touch.zoomSensitivity = clampFloat(Number(elements.touchZoomSensitivity.value), 0.1, 1.5, 0.35);
+  syncTouchTuningUI();
+});
+
+elements.touchDeadZonePx?.addEventListener("input", () => {
+  state.touch.deadZonePx = clampFloat(Number(elements.touchDeadZonePx.value), 0, 12, 2);
+  syncTouchTuningUI();
+});
+
+elements.touchMoveClampPx?.addEventListener("input", () => {
+  state.touch.moveClampPx = clampFloat(Number(elements.touchMoveClampPx.value), 4, 60, 24);
+  syncTouchTuningUI();
+});
+
+elements.touchPinchClampPercent?.addEventListener("input", () => {
+  state.touch.pinchClampPercent = clampFloat(Number(elements.touchPinchClampPercent.value), 1, 20, 5);
+  syncTouchTuningUI();
+});
+
+elements.mouseRotateSensitivity?.addEventListener("input", () => {
+  state.mouse.rotateSensitivity = clampFloat(Number(elements.mouseRotateSensitivity.value), 0.1, 1.5, 0.75);
+  syncMouseTuningUI();
+});
+
+elements.mousePanSensitivity?.addEventListener("input", () => {
+  state.mouse.panSensitivity = clampFloat(Number(elements.mousePanSensitivity.value), 0.1, 1.5, 0.6);
+  syncMouseTuningUI();
+});
+
+elements.mouseZoomSensitivity?.addEventListener("input", () => {
+  state.mouse.zoomSensitivity = clampFloat(Number(elements.mouseZoomSensitivity.value), 0.1, 1.5, 0.85);
+  syncMouseTuningUI();
+});
+
+elements.mouseMoveClampPx?.addEventListener("input", () => {
+  state.mouse.moveClampPx = clampFloat(Number(elements.mouseMoveClampPx.value), 4, 80, 20);
+  syncMouseTuningUI();
 });
 
 elements.visualizationMode.addEventListener("change", () => {
@@ -323,6 +451,7 @@ function openSocket() {
     });
     sendRenderParams();
     reportResize(true);
+    startMetricsPolling();
   });
 
   socket.addEventListener("message", (event) => {
@@ -333,6 +462,7 @@ function openSocket() {
     state.ws = null;
     elements.disconnectButton.disabled = true;
     elements.connectButton.disabled = false;
+    stopMetricsPolling();
     cleanupPeerConnection();
     const closeText = `WS closed ${event.code}${event.reason ? ` ${event.reason}` : ""}`;
     logEvent(closeText);
@@ -365,6 +495,7 @@ function disconnect(manual = true) {
   state.shouldReconnect = !manual;
   clearTimeout(state.reconnectTimer);
   state.reconnectTimer = null;
+  stopMetricsPolling();
 
   if (state.ws) {
     try {
@@ -564,6 +695,17 @@ async function addIceCandidate(payload) {
 
 function cleanupPeerConnection() {
   clearTimeout(state.pendingInteractionEnd);
+  if (state.touchGesture.rafId) {
+    cancelAnimationFrame(state.touchGesture.rafId);
+    state.touchGesture.rafId = 0;
+  }
+  state.touchGesture.pending = false;
+  state.touchGesture.lastFlushTs = 0;
+  state.touchGesture.smoothRotateDx = 0;
+  state.touchGesture.smoothRotateDy = 0;
+  state.touchGesture.smoothPanDx = 0;
+  state.touchGesture.smoothPanDy = 0;
+  state.touchGesture.smoothPinchLog = 0;
   state.interactionActive = false;
   state.activePointers.clear();
   state.pointerBaseline = null;
@@ -688,29 +830,54 @@ function installGestureHandlers(target) {
       return;
     }
 
-    const point = normalizePoint(event);
+    const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [event];
+    const latest = coalesced.length > 0 ? coalesced[coalesced.length - 1] : event;
+    const point = normalizePoint(latest);
     pointer.last = point;
     state.activePointers.set(event.pointerId, pointer);
 
+    if (pointer.kind === "touch") {
+      scheduleTouchGestureFlush();
+      return;
+    }
+
     if (state.activePointers.size === 1) {
-      const baseline = state.pointerBaseline || point;
-      const dx = point.x - baseline.x;
-      const dy = point.y - baseline.y;
+      const prev = pointer.lastSent || point;
+      const delta = normalizeDeltaFromPoints(prev, point);
+      pointer.lastSent = point;
+      state.activePointers.set(event.pointerId, pointer);
+      const moveMode = event.buttons === 2 ? "pan" : "rotate";
+      const tuned = tuneMouseDelta(delta.dx, delta.dy, moveMode);
+      if (!tuned) {
+        return;
+      }
       sendInteractionMove({
         kind: pointer.kind,
         pointerId: event.pointerId,
         x: point.x,
         y: point.y,
-        dx,
-        dy,
+        dx: tuned.dx,
+        dy: tuned.dy,
         buttons: event.buttons,
         pressure: event.pressure,
       });
     } else if (state.activePointers.size >= 2) {
       const [first, second] = [...state.activePointers.values()];
       const center = midpoint(first.last, second.last);
+      const firstPrev = first.lastSent || first.last;
+      const secondPrev = second.lastSent || second.last;
+      const prevDistance = Math.hypot(secondPrev.x - firstPrev.x, secondPrev.y - firstPrev.y);
       const distance = Math.hypot(second.last.x - first.last.x, second.last.y - first.last.y);
-      const scale = state.gestureStartDistance ? distance / state.gestureStartDistance : 1;
+      let scale = prevDistance > 0 ? distance / prevDistance : 1;
+      if (Number.isFinite(scale)) {
+        const logDelta = Math.log(scale) * state.mouse.zoomSensitivity;
+        const maxLog = Math.log(1 + state.touch.pinchClampPercent / 100);
+        scale = clampFloat(Math.exp(clampFloat(logDelta, -maxLog, maxLog, 0)), 0.9, 1.1, 1);
+      } else {
+        scale = 1;
+      }
+      first.lastSent = first.last;
+      second.lastSent = second.last;
       send({
         type: "camera.pinch",
         sessionId: state.sessionId,
@@ -720,6 +887,113 @@ function installGestureHandlers(target) {
         baseScale: state.gestureStartScale,
       });
     }
+  };
+
+  const scheduleTouchGestureFlush = () => {
+    state.touchGesture.pending = true;
+    if (state.touchGesture.rafId) {
+      return;
+    }
+    state.touchGesture.rafId = window.requestAnimationFrame((ts) => {
+      state.touchGesture.rafId = 0;
+      flushTouchGestures(ts);
+    });
+  };
+
+  const flushTouchGestures = (tsMs) => {
+    if (!state.touchGesture.pending) {
+      return;
+    }
+    state.touchGesture.pending = false;
+
+    if (state.activePointers.size === 0) {
+      return;
+    }
+
+    const minInterval = state.touch.minSendIntervalMs;
+    const sinceLast = tsMs - state.touchGesture.lastFlushTs;
+    if (state.touchGesture.lastFlushTs > 0 && sinceLast < minInterval) {
+      scheduleTouchGestureFlush();
+      return;
+    }
+
+    const dtMs = state.touchGesture.lastFlushTs > 0 ? sinceLast : minInterval;
+    state.touchGesture.lastFlushTs = tsMs;
+
+    if (state.activePointers.size === 1) {
+      const [entry] = [...state.activePointers.entries()];
+      const [pointerId, pointer] = entry;
+      if (pointer.kind !== "touch") {
+        return;
+      }
+      const prev = pointer.lastSent || pointer.last;
+      const delta = normalizeDeltaFromPoints(prev, pointer.last);
+      pointer.lastSent = pointer.last;
+      state.activePointers.set(pointerId, pointer);
+      const tuned = tuneTouchDelta(delta.dx, delta.dy, "rotate", dtMs);
+      if (!tuned) {
+        return;
+      }
+      sendInteractionMove({
+        kind: pointer.kind,
+        pointerId,
+        x: pointer.last.x,
+        y: pointer.last.y,
+        dx: tuned.dx,
+        dy: tuned.dy,
+        buttons: 1,
+        pressure: 0.5,
+      });
+      return;
+    }
+
+    const [firstEntry, secondEntry] = [...state.activePointers.entries()];
+    if (!firstEntry || !secondEntry) {
+      return;
+    }
+    const [firstId, first] = firstEntry;
+    const [, second] = secondEntry;
+    if (first.kind !== "touch" || second.kind !== "touch") {
+      return;
+    }
+
+    const firstPrev = first.lastSent || first.last;
+    const secondPrev = second.lastSent || second.last;
+    const centerPrev = midpoint(firstPrev, secondPrev);
+    const centerNow = midpoint(first.last, second.last);
+    const panDelta = normalizeDeltaFromPoints(centerPrev, centerNow);
+    const tunedPan = tuneTouchDelta(panDelta.dx, panDelta.dy, "pan", dtMs);
+    if (tunedPan) {
+      sendInteractionMove({
+        kind: "touch",
+        pointerId: firstId,
+        x: centerNow.x,
+        y: centerNow.y,
+        dx: tunedPan.dx,
+        dy: tunedPan.dy,
+        buttons: 2,
+        pressure: 0.5,
+      });
+    }
+
+    const prevDistance = Math.hypot(secondPrev.x - firstPrev.x, secondPrev.y - firstPrev.y);
+    const nowDistance = Math.hypot(second.last.x - first.last.x, second.last.y - first.last.y);
+    const pinchScale = tuneTouchPinchScale(prevDistance, nowDistance, dtMs);
+    if (pinchScale !== null) {
+      send({
+        type: "camera.pinch",
+        sessionId: state.sessionId,
+        centerX: centerNow.x,
+        centerY: centerNow.y,
+        scale: pinchScale,
+        baseScale: 1,
+      });
+    }
+
+    first.lastSent = first.last;
+    second.lastSent = second.last;
+    state.activePointers.set(firstId, first);
+    state.activePointers.set(secondEntry[0], second);
   };
 
   target.addEventListener("pointerdown", (event) => {
@@ -732,6 +1006,7 @@ function installGestureHandlers(target) {
       kind: event.pointerType,
       start: point,
       last: point,
+      lastSent: point,
     });
     if (!state.interactionActive) {
       startInteraction(event.pointerType);
@@ -743,6 +1018,7 @@ function installGestureHandlers(target) {
       const [first, second] = [...state.activePointers.values()];
       state.gestureStartDistance = Math.hypot(second.last.x - first.last.x, second.last.y - first.last.y);
       state.gestureStartScale = 1;
+      state.touchGesture.smoothPinchLog = 0;
     }
     send({
       type: "camera.pointer",
@@ -767,16 +1043,20 @@ function installGestureHandlers(target) {
     if (!state.interactionActive) {
       startInteraction("wheel");
     }
+    const normalizedWheel = normalizeWheelDelta(event);
+    const mouseClamp = Math.max(8, state.mouse.moveClampPx * 2);
+    const mode = event.ctrlKey ? "zoom" : "pan";
+    const wheelScale = mode === "zoom" ? state.mouse.zoomSensitivity : state.mouse.panSensitivity;
     const payload = {
       type: "camera.wheel",
       sessionId: state.sessionId,
-      deltaX: event.deltaX,
-      deltaY: event.deltaY,
-      deltaMode: event.deltaMode,
+      deltaX: clampFloat(normalizedWheel.deltaX * wheelScale, -mouseClamp, mouseClamp, 0),
+      deltaY: clampFloat(normalizedWheel.deltaY * wheelScale, -mouseClamp, mouseClamp, 0),
+      deltaMode: 0,
       ctrlKey: event.ctrlKey,
       shiftKey: event.shiftKey,
       altKey: event.altKey,
-      mode: event.ctrlKey ? "zoom" : "pan",
+      mode,
     };
     send(payload);
     logGesture("wheel", `${payload.mode} ${Math.round(event.deltaX)},${Math.round(event.deltaY)}`);
@@ -788,6 +1068,9 @@ function installGestureHandlers(target) {
   });
 
   function finishPointer(event) {
+    if (event.pointerType === "touch") {
+      resetTouchGestureState();
+    }
     send({
       type: "camera.pointer",
       sessionId: state.sessionId,
@@ -802,12 +1085,29 @@ function installGestureHandlers(target) {
     if (state.activePointers.size < 2) {
       state.gestureStartDistance = 0;
       state.gestureStartScale = 1;
+      state.touchGesture.smoothPinchLog = 0;
+      const [remainingId, remainingPointer] = [...state.activePointers.entries()][0] || [];
+      if (remainingPointer) {
+        remainingPointer.lastSent = remainingPointer.last;
+        state.activePointers.set(remainingId, remainingPointer);
+      }
     }
     if (state.activePointers.size === 0) {
       state.pointerBaseline = null;
+      resetTouchGestureState();
       scheduleInteractionEnd();
     }
     logGesture("pointerup", `${event.pointerType}`);
+  }
+
+  function resetTouchGestureState() {
+    state.touchGesture.pending = false;
+    state.touchGesture.lastFlushTs = 0;
+    state.touchGesture.smoothRotateDx = 0;
+    state.touchGesture.smoothRotateDy = 0;
+    state.touchGesture.smoothPanDx = 0;
+    state.touchGesture.smoothPanDy = 0;
+    state.touchGesture.smoothPinchLog = 0;
   }
 }
 
@@ -871,6 +1171,129 @@ function midpoint(a, b) {
   };
 }
 
+function normalizeDeltaFromPoints(prev, next) {
+  const rect = elements.stageFrame.getBoundingClientRect();
+  const minSide = Math.max(1, Math.min(rect.width, rect.height));
+  const dxPx = (next.x - prev.x) * rect.width;
+  const dyPx = (next.y - prev.y) * rect.height;
+  return {
+    dx: dxPx / minSide,
+    dy: dyPx / minSide,
+  };
+}
+
+function tuneTouchDelta(dx, dy, mode, dtMs) {
+  const deadZoneNorm = touchPxToNorm(state.touch.deadZonePx);
+  let outDx = dx;
+  let outDy = dy;
+  let magnitude = Math.hypot(outDx, outDy);
+  if (!Number.isFinite(magnitude) || magnitude < deadZoneNorm) {
+    if (mode === "rotate") {
+      state.touchGesture.smoothRotateDx = 0;
+      state.touchGesture.smoothRotateDy = 0;
+    } else {
+      state.touchGesture.smoothPanDx = 0;
+      state.touchGesture.smoothPanDy = 0;
+    }
+    return null;
+  }
+
+  const sensitivity = mode === "rotate" ? state.touch.rotateSensitivity : state.touch.panSensitivity;
+  outDx *= sensitivity;
+  outDy *= sensitivity;
+
+  const clampNorm = touchPxToNorm(state.touch.moveClampPx);
+  magnitude = Math.hypot(outDx, outDy);
+  if (magnitude > clampNorm && magnitude > 0) {
+    const ratio = clampNorm / magnitude;
+    outDx *= ratio;
+    outDy *= ratio;
+  }
+
+  const tau = mode === "rotate" ? state.touch.rotateSmoothTauMs : state.touch.panSmoothTauMs;
+  const alpha = 1 - Math.exp(-Math.max(1, dtMs) / Math.max(1, tau));
+  if (mode === "rotate") {
+    state.touchGesture.smoothRotateDx += alpha * (outDx - state.touchGesture.smoothRotateDx);
+    state.touchGesture.smoothRotateDy += alpha * (outDy - state.touchGesture.smoothRotateDy);
+    return { dx: state.touchGesture.smoothRotateDx, dy: state.touchGesture.smoothRotateDy };
+  }
+
+  state.touchGesture.smoothPanDx += alpha * (outDx - state.touchGesture.smoothPanDx);
+  state.touchGesture.smoothPanDy += alpha * (outDy - state.touchGesture.smoothPanDy);
+  return { dx: state.touchGesture.smoothPanDx, dy: state.touchGesture.smoothPanDy };
+}
+
+function tuneTouchPinchScale(prevDistance, nowDistance, dtMs) {
+  if (!Number.isFinite(prevDistance) || !Number.isFinite(nowDistance) || prevDistance <= 0 || nowDistance <= 0) {
+    return null;
+  }
+
+  let logDelta = Math.log(nowDistance / prevDistance);
+  if (!Number.isFinite(logDelta)) {
+    return null;
+  }
+
+  const deadzoneLog = Math.log(1 + state.touch.pinchDeadZonePercent / 100);
+  if (Math.abs(logDelta) < deadzoneLog) {
+    state.touchGesture.smoothPinchLog = 0;
+    return null;
+  }
+
+  logDelta *= state.touch.zoomSensitivity;
+  const maxLog = Math.log(1 + state.touch.pinchClampPercent / 100);
+  logDelta = clampFloat(logDelta, -maxLog, maxLog, 0);
+
+  const alpha = 1 - Math.exp(-Math.max(1, dtMs) / Math.max(1, state.touch.pinchSmoothTauMs));
+  state.touchGesture.smoothPinchLog += alpha * (logDelta - state.touchGesture.smoothPinchLog);
+
+  if (Math.abs(state.touchGesture.smoothPinchLog) < 0.0008) {
+    return null;
+  }
+  return clampFloat(Math.exp(state.touchGesture.smoothPinchLog), 0.9, 1.1, 1);
+}
+
+function touchPxToNorm(px) {
+  const rect = elements.stageFrame.getBoundingClientRect();
+  const minSide = Math.max(1, Math.min(rect.width, rect.height));
+  return px / minSide;
+}
+
+function tuneMouseDelta(dx, dy, mode) {
+  const deadZoneNorm = touchPxToNorm(state.mouse.deadZonePx);
+  let outDx = dx;
+  let outDy = dy;
+  let magnitude = Math.hypot(outDx, outDy);
+  if (!Number.isFinite(magnitude) || magnitude < deadZoneNorm) {
+    return null;
+  }
+
+  const sensitivity = mode === "pan" ? state.mouse.panSensitivity : state.mouse.rotateSensitivity;
+  outDx *= sensitivity;
+  outDy *= sensitivity;
+
+  const clampNorm = touchPxToNorm(state.mouse.moveClampPx);
+  magnitude = Math.hypot(outDx, outDy);
+  if (magnitude > clampNorm && magnitude > 0) {
+    const ratio = clampNorm / magnitude;
+    outDx *= ratio;
+    outDy *= ratio;
+  }
+  return { dx: outDx, dy: outDy };
+}
+
+function normalizeWheelDelta(event) {
+  let factor = 1;
+  if (event.deltaMode === 1) {
+    factor = 16;
+  } else if (event.deltaMode === 2) {
+    factor = Math.max(1, elements.stageFrame.getBoundingClientRect().height * 0.85);
+  }
+  return {
+    deltaX: event.deltaX * factor,
+    deltaY: event.deltaY * factor,
+  };
+}
+
 function normalizeDescription(payload) {
   if (payload?.type && payload?.sdp) {
     return payload;
@@ -905,6 +1328,87 @@ function formatIso(value) {
 
 function formatFloat(value) {
   return Number(value).toFixed(2);
+}
+
+function clampFloat(value, min, max, fallback) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
+}
+
+function syncTouchTuningUI() {
+  if (elements.touchRotateSensitivity) {
+    elements.touchRotateSensitivity.value = state.touch.rotateSensitivity.toFixed(2);
+  }
+  if (elements.touchRotateSensitivityValue) {
+    elements.touchRotateSensitivityValue.textContent = formatFloat(state.touch.rotateSensitivity);
+  }
+
+  if (elements.touchPanSensitivity) {
+    elements.touchPanSensitivity.value = state.touch.panSensitivity.toFixed(2);
+  }
+  if (elements.touchPanSensitivityValue) {
+    elements.touchPanSensitivityValue.textContent = formatFloat(state.touch.panSensitivity);
+  }
+
+  if (elements.touchZoomSensitivity) {
+    elements.touchZoomSensitivity.value = state.touch.zoomSensitivity.toFixed(2);
+  }
+  if (elements.touchZoomSensitivityValue) {
+    elements.touchZoomSensitivityValue.textContent = formatFloat(state.touch.zoomSensitivity);
+  }
+
+  if (elements.touchDeadZonePx) {
+    elements.touchDeadZonePx.value = state.touch.deadZonePx.toFixed(1);
+  }
+  if (elements.touchDeadZonePxValue) {
+    elements.touchDeadZonePxValue.textContent = `${state.touch.deadZonePx.toFixed(1)} px`;
+  }
+
+  if (elements.touchMoveClampPx) {
+    elements.touchMoveClampPx.value = String(Math.round(state.touch.moveClampPx));
+  }
+  if (elements.touchMoveClampPxValue) {
+    elements.touchMoveClampPxValue.textContent = `${Math.round(state.touch.moveClampPx)} px`;
+  }
+
+  if (elements.touchPinchClampPercent) {
+    elements.touchPinchClampPercent.value = String(Math.round(state.touch.pinchClampPercent));
+  }
+  if (elements.touchPinchClampPercentValue) {
+    elements.touchPinchClampPercentValue.textContent = `${Math.round(state.touch.pinchClampPercent)}%`;
+  }
+}
+
+function syncMouseTuningUI() {
+  if (elements.mouseRotateSensitivity) {
+    elements.mouseRotateSensitivity.value = state.mouse.rotateSensitivity.toFixed(2);
+  }
+  if (elements.mouseRotateSensitivityValue) {
+    elements.mouseRotateSensitivityValue.textContent = formatFloat(state.mouse.rotateSensitivity);
+  }
+
+  if (elements.mousePanSensitivity) {
+    elements.mousePanSensitivity.value = state.mouse.panSensitivity.toFixed(2);
+  }
+  if (elements.mousePanSensitivityValue) {
+    elements.mousePanSensitivityValue.textContent = formatFloat(state.mouse.panSensitivity);
+  }
+
+  if (elements.mouseZoomSensitivity) {
+    elements.mouseZoomSensitivity.value = state.mouse.zoomSensitivity.toFixed(2);
+  }
+  if (elements.mouseZoomSensitivityValue) {
+    elements.mouseZoomSensitivityValue.textContent = formatFloat(state.mouse.zoomSensitivity);
+  }
+
+  if (elements.mouseMoveClampPx) {
+    elements.mouseMoveClampPx.value = String(Math.round(state.mouse.moveClampPx));
+  }
+  if (elements.mouseMoveClampPxValue) {
+    elements.mouseMoveClampPxValue.textContent = `${Math.round(state.mouse.moveClampPx)} px`;
+  }
 }
 
 function toggleVisualizationControls() {
@@ -1074,6 +1578,186 @@ function createSessionId() {
   }
 
   return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function installControlPanelUI() {
+  const setActiveTab = (tabKey) => {
+    state.ui.activeTab = tabKey;
+    controlTabButtons.forEach((button) => {
+      const active = button.dataset.tabTarget === tabKey;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    controlTabPanels.forEach((panel) => {
+      const active = panel.dataset.tabPanel === tabKey;
+      panel.classList.toggle("active", active);
+    });
+    if (tabKey === "metrics") {
+      fetchMetricsNow(true);
+    }
+  };
+
+  controlTabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const tabKey = button.dataset.tabTarget;
+      if (tabKey) {
+        setActiveTab(tabKey);
+      }
+    });
+  });
+
+  const openDrawer = () => elements.appShell.classList.add("controls-open");
+  const closeDrawer = () => elements.appShell.classList.remove("controls-open");
+  elements.controlDrawerToggle?.addEventListener("click", openDrawer);
+  elements.controlDrawerClose?.addEventListener("click", closeDrawer);
+
+  elements.stageFrame?.addEventListener("pointerdown", () => {
+    if (window.matchMedia("(max-width: 1120px)").matches) {
+      closeDrawer();
+    }
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeDrawer();
+    }
+  });
+}
+
+function startMetricsPolling() {
+  if (state.metrics.pollTimer) {
+    return;
+  }
+  setMetricsStatus("loading");
+  fetchMetricsNow(true);
+  state.metrics.pollTimer = window.setInterval(() => {
+    fetchMetricsNow();
+  }, 2500);
+}
+
+function stopMetricsPolling() {
+  clearInterval(state.metrics.pollTimer);
+  state.metrics.pollTimer = 0;
+  state.metrics.pending = false;
+  setMetricsStatus("idle");
+}
+
+async function fetchMetricsNow(force = false) {
+  if (state.metrics.pending && !force) {
+    return;
+  }
+  if (!state.sessionId) {
+    setMetricsStatus("waiting");
+    return;
+  }
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    setMetricsStatus("waiting");
+    return;
+  }
+
+  state.metrics.pending = true;
+  if (state.ui.activeTab === "metrics") {
+    setMetricsStatus("loading");
+  }
+
+  try {
+    const url = buildMetricsUrl();
+    const response = await fetch(url, { method: "GET", cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    state.metrics.lastSessionId = payload.sessionId || "";
+    renderMetrics(payload);
+    if (state.ui.activeTab === "metrics") {
+      setMetricsStatus("ok");
+    }
+  } catch (error) {
+    if (state.ui.activeTab === "metrics") {
+      setMetricsStatus("error");
+    }
+    console.warn("Metrics fetch failed", error);
+  } finally {
+    state.metrics.pending = false;
+  }
+}
+
+function buildMetricsUrl() {
+  const base = `/api/metrics/${encodeURIComponent(state.sessionId)}`;
+  const token = elements.authToken?.value?.trim();
+  if (!token) {
+    return base;
+  }
+  return `${base}?token=${encodeURIComponent(token)}`;
+}
+
+function renderMetrics(payload) {
+  const runtime = payload?.runtimeMetrics || {};
+  const importMetrics = payload?.importMetrics || {};
+  const datasetName = payload?.datasetName || payload?.datasetPath || "-";
+
+  setText(elements.metricsSessionId, payload?.sessionId || state.sessionId || "-");
+  setText(elements.metricsVisualizationMode, payload?.visualizationMode || "-");
+  setText(elements.metricsDataset, datasetName);
+  setText(elements.metricsFirstFrameLatency, formatMs(runtime.firstFrameLatencyMs));
+  setText(elements.metricsInteractiveFps, formatNumber(runtime.interactiveFps, "fps"));
+  setText(elements.metricsHighQualityRenderTime, formatMs(runtime.highQualityRenderTimeMs));
+  setText(elements.metricsMemoryRss, formatNumber(runtime.memoryRssMb, "MB"));
+
+  setText(elements.metricsFitsOpen, formatMs(importMetrics.fitsOpenMs));
+  setText(elements.metricsHduSelect, formatMs(importMetrics.hduSelectMs));
+  setText(elements.metricsSanitizeConvert, formatMs(importMetrics.sanitizeConvertMs));
+  setText(elements.metricsVtkBuild, formatMs(importMetrics.vtkBuildMs));
+  setText(elements.metricsFitsTotal, formatMs(importMetrics.fitsTotalMs));
+}
+
+function setMetricsStatus(status) {
+  if (!elements.metricsStatus) {
+    return;
+  }
+  if (status === "ok") {
+    elements.metricsStatus.textContent = "live";
+    elements.metricsStatus.classList.remove("subtle");
+    return;
+  }
+  if (status === "loading") {
+    elements.metricsStatus.textContent = "loading";
+    elements.metricsStatus.classList.add("subtle");
+    return;
+  }
+  if (status === "waiting") {
+    elements.metricsStatus.textContent = "waiting";
+    elements.metricsStatus.classList.add("subtle");
+    return;
+  }
+  if (status === "error") {
+    elements.metricsStatus.textContent = "error";
+    elements.metricsStatus.classList.add("subtle");
+    return;
+  }
+  elements.metricsStatus.textContent = "idle";
+  elements.metricsStatus.classList.add("subtle");
+}
+
+function setText(el, value) {
+  if (!el) {
+    return;
+  }
+  el.textContent = value ?? "-";
+}
+
+function formatMs(value) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+  return `${Number(value).toFixed(1)} ms`;
+}
+
+function formatNumber(value, unit) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+  return `${Number(value).toFixed(2)} ${unit}`;
 }
 
 function buildWsUrl(raw, token) {

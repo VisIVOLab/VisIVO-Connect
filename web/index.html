@@ -20,6 +20,7 @@
         </div>
 
         <div class="status-cluster">
+          <button class="ghost-button mobile-only" id="controlDrawerToggle" type="button">Controls</button>
           <span class="status-chip" id="connectionState">connecting</span>
           <span class="status-chip subtle" id="renderState">interactive</span>
         </div>
@@ -56,171 +57,335 @@
         </section>
 
         <aside class="control-pane">
-          <section class="control-card">
-            <div class="card-heading">
-              <h2>Connection</h2>
-              <button class="ghost-button" id="fullscreenButton" type="button">Fullscreen</button>
+          <div class="control-shell">
+            <div class="control-header">
+              <h2>Controls</h2>
+              <button class="ghost-button mobile-only" id="controlDrawerClose" type="button">Close</button>
             </div>
 
-            <label class="field">
-              <span>WebSocket URL</span>
-              <input id="wsUrl" type="text" spellcheck="false" value="/ws" />
-            </label>
-            <label class="field">
-              <span>Token (optional)</span>
-              <input id="authToken" type="password" spellcheck="false" placeholder="VISIVO_AUTH_TOKEN" />
-            </label>
-
-            <div class="button-row">
-              <button class="primary-button" id="connectButton" type="button">Connect</button>
-              <button class="ghost-button" id="disconnectButton" type="button" disabled>Disconnect</button>
+            <div class="tab-row" role="tablist" aria-label="Control sections">
+              <button class="tab-button active" type="button" id="tabButtonSession" data-tab-target="session" role="tab" aria-selected="true">Session</button>
+              <button class="tab-button" type="button" id="tabButtonView" data-tab-target="view" role="tab" aria-selected="false">View</button>
+              <button class="tab-button" type="button" id="tabButtonData" data-tab-target="data" role="tab" aria-selected="false">Data / FITS</button>
+              <button class="tab-button" type="button" id="tabButtonMetrics" data-tab-target="metrics" role="tab" aria-selected="false">Metrics</button>
+              <button class="tab-button" type="button" id="tabButtonLogs" data-tab-target="logs" role="tab" aria-selected="false">Logs</button>
             </div>
 
-            <div class="meta-grid">
-              <div>
-                <span class="meta-label">Session</span>
-                <span class="meta-value" id="sessionId">-</span>
-              </div>
-              <div>
-                <span class="meta-label">Viewport</span>
-                <span class="meta-value" id="viewportValue">-</span>
-              </div>
-            </div>
-          </section>
-
-          <section class="control-card">
-            <div class="card-heading">
-              <h2>Render Params</h2>
-              <div class="button-row">
-                <button class="ghost-button" id="autoContrastButton" type="button">Auto Contrast</button>
-                <span class="badge" id="qualityBadge">interactive</span>
-              </div>
-            </div>
-
-            <label class="field">
-              <span>Visualization</span>
-              <select id="visualizationMode">
-                <option value="volume" selected>Volume rendering</option>
-                <option value="isosurface">Isosurface</option>
-              </select>
-            </label>
-
-            <div class="field" id="isoControls">
-              <span>Iso value</span>
-              <input id="isoValue" type="range" min="-1" max="1" step="0.01" value="0" />
-              <div class="inline-field">
-                <input id="isoValueNumber" type="number" step="0.01" value="0" />
-                <output id="isoValueValue">0.00</output>
-              </div>
-            </div>
-
-            <div class="field" id="volumeControls">
-              <span>Volume mode</span>
-              <select id="volumeRenderMode">
-                <option value="composite" selected>Composite</option>
-                <option value="mip">MIP</option>
-                <option value="slice">Slice</option>
-              </select>
-
-              <label class="field compact-field">
-                <span>Opacity scale</span>
-                <input id="volumeOpacityScale" type="range" min="0.1" max="4.0" step="0.05" value="1.8" />
-                <output id="volumeOpacityScaleValue">1.80</output>
-              </label>
-
-              <label class="field compact-field">
-                <span>Sample distance scale</span>
-                <input id="volumeSampleDistanceScale" type="range" min="0.4" max="4.0" step="0.05" value="1.2" />
-                <output id="volumeSampleDistanceScaleValue">1.20</output>
-              </label>
-
-              <label class="field compact-field">
-                <span>Image sample distance</span>
-                <input id="volumeImageSampleDistance" type="range" min="0.5" max="6.0" step="0.1" value="2.2" />
-                <output id="volumeImageSampleDistanceValue">2.20</output>
-              </label>
-
-              <label class="check-row">
-                <input id="volumeShade" type="checkbox" checked />
-                <span>Shading</span>
-              </label>
-            </div>
-
-            <div class="field hidden" id="sliceControls">
-              <span>Slice controls</span>
-              <select id="sliceAxis">
-                <option value="x">X</option>
-                <option value="y">Y</option>
-                <option value="z" selected>Z</option>
-              </select>
-              <input id="slicePosition" type="range" min="0" max="1" step="0.01" value="0.5" />
-              <output id="slicePositionValue">0.50</output>
-            </div>
-
-            <div class="field" id="cropControls">
-              <label class="check-row">
-                <input id="cropEnabled" type="checkbox" />
-                <span>Enable cropping</span>
-              </label>
-              <div class="crop-grid">
-                <label class="field compact-field">
-                  <span>X min/max</span>
-                  <div class="inline-field">
-                    <input id="cropXMin" type="number" min="0" max="1" step="0.01" value="0.00" />
-                    <input id="cropXMax" type="number" min="0" max="1" step="0.01" value="1.00" />
+            <div class="tab-panels">
+              <section class="tab-panel active" data-tab-panel="session" role="tabpanel" aria-labelledby="tabButtonSession">
+                <section class="control-card">
+                  <div class="card-heading">
+                    <h2>Session / Connection</h2>
+                    <button class="ghost-button" id="fullscreenButton" type="button">Fullscreen</button>
                   </div>
-                </label>
-                <label class="field compact-field">
-                  <span>Y min/max</span>
-                  <div class="inline-field">
-                    <input id="cropYMin" type="number" min="0" max="1" step="0.01" value="0.00" />
-                    <input id="cropYMax" type="number" min="0" max="1" step="0.01" value="1.00" />
+
+                  <label class="field">
+                    <span>WebSocket URL</span>
+                    <input id="wsUrl" type="text" spellcheck="false" value="/ws" />
+                  </label>
+                  <label class="field">
+                    <span>Token (optional)</span>
+                    <input id="authToken" type="password" spellcheck="false" placeholder="VISIVO_AUTH_TOKEN" />
+                  </label>
+
+                  <div class="button-row">
+                    <button class="primary-button" id="connectButton" type="button">Connect</button>
+                    <button class="ghost-button" id="disconnectButton" type="button" disabled>Disconnect</button>
                   </div>
-                </label>
-                <label class="field compact-field">
-                  <span>Z min/max</span>
-                  <div class="inline-field">
-                    <input id="cropZMin" type="number" min="0" max="1" step="0.01" value="0.00" />
-                    <input id="cropZMax" type="number" min="0" max="1" step="0.01" value="1.00" />
+
+                  <div class="meta-grid">
+                    <div>
+                      <span class="meta-label">Session</span>
+                      <span class="meta-value" id="sessionId">-</span>
+                    </div>
+                    <div>
+                      <span class="meta-label">Viewport</span>
+                      <span class="meta-value" id="viewportValue">-</span>
+                    </div>
                   </div>
-                </label>
-              </div>
+                </section>
+              </section>
+
+              <section class="tab-panel" data-tab-panel="view" role="tabpanel" aria-labelledby="tabButtonView">
+                <section class="control-card">
+                  <div class="card-heading">
+                    <h2>View / Rendering</h2>
+                    <div class="button-row">
+                      <button class="ghost-button" id="autoContrastButton" type="button">Auto Contrast</button>
+                      <span class="badge" id="qualityBadge">interactive</span>
+                    </div>
+                  </div>
+
+                  <label class="field">
+                    <span>Visualization</span>
+                    <select id="visualizationMode">
+                      <option value="volume" selected>Volume rendering</option>
+                      <option value="isosurface">Isosurface</option>
+                    </select>
+                  </label>
+
+                  <label class="field">
+                    <span>Render scale</span>
+                    <input id="renderScale" type="range" min="0.5" max="1.5" step="0.05" value="1" />
+                    <output id="renderScaleValue">1.00x</output>
+                  </label>
+
+                  <label class="field">
+                    <span>Target bitrate</span>
+                    <input id="bitrate" type="range" min="1" max="25" step="1" value="10" />
+                    <output id="bitrateValue">10 Mbps</output>
+                  </label>
+
+                  <label class="field">
+                    <span>Target FPS</span>
+                    <input id="targetFps" type="range" min="10" max="60" step="1" value="30" />
+                    <output id="targetFpsValue">30 fps</output>
+                  </label>
+
+                  <div class="toggle-row" role="group" aria-label="Quality mode">
+                    <button class="toggle active" id="interactiveModeButton" type="button">Interactive</button>
+                    <button class="toggle" id="hqModeButton" type="button">High quality</button>
+                  </div>
+
+                  <div class="field">
+                    <span>Touch tuning (debug)</span>
+
+                    <label class="field compact-field">
+                      <span>Touch rotate sensitivity</span>
+                      <input id="touchRotateSensitivity" type="range" min="0.10" max="1.50" step="0.05" value="0.45" />
+                      <output id="touchRotateSensitivityValue">0.45</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Touch pan sensitivity</span>
+                      <input id="touchPanSensitivity" type="range" min="0.10" max="1.50" step="0.05" value="0.40" />
+                      <output id="touchPanSensitivityValue">0.40</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Touch zoom sensitivity</span>
+                      <input id="touchZoomSensitivity" type="range" min="0.10" max="1.50" step="0.05" value="0.35" />
+                      <output id="touchZoomSensitivityValue">0.35</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Touch dead zone (px)</span>
+                      <input id="touchDeadZonePx" type="range" min="0" max="12" step="0.5" value="2" />
+                      <output id="touchDeadZonePxValue">2.0 px</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Touch move clamp (px/update)</span>
+                      <input id="touchMoveClampPx" type="range" min="4" max="60" step="1" value="24" />
+                      <output id="touchMoveClampPxValue">24 px</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Pinch clamp (%/update)</span>
+                      <input id="touchPinchClampPercent" type="range" min="1" max="20" step="1" value="5" />
+                      <output id="touchPinchClampPercentValue">5%</output>
+                    </label>
+                  </div>
+
+                  <div class="field">
+                    <span>Mouse tuning (debug)</span>
+
+                    <label class="field compact-field">
+                      <span>Mouse rotate sensitivity</span>
+                      <input id="mouseRotateSensitivity" type="range" min="0.10" max="1.50" step="0.05" value="0.75" />
+                      <output id="mouseRotateSensitivityValue">0.75</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Mouse pan sensitivity</span>
+                      <input id="mousePanSensitivity" type="range" min="0.10" max="1.50" step="0.05" value="0.60" />
+                      <output id="mousePanSensitivityValue">0.60</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Mouse zoom sensitivity</span>
+                      <input id="mouseZoomSensitivity" type="range" min="0.10" max="1.50" step="0.05" value="0.85" />
+                      <output id="mouseZoomSensitivityValue">0.85</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Mouse move clamp (px/update)</span>
+                      <input id="mouseMoveClampPx" type="range" min="4" max="80" step="1" value="20" />
+                      <output id="mouseMoveClampPxValue">20 px</output>
+                    </label>
+                  </div>
+                </section>
+              </section>
+
+              <section class="tab-panel" data-tab-panel="data" role="tabpanel" aria-labelledby="tabButtonData">
+                <section class="control-card">
+                  <div class="card-heading">
+                    <h2>Data / FITS Controls</h2>
+                  </div>
+
+                  <div class="field" id="isoControls">
+                    <span>Iso value</span>
+                    <input id="isoValue" type="range" min="-1" max="1" step="0.01" value="0" />
+                    <div class="inline-field">
+                      <input id="isoValueNumber" type="number" step="0.01" value="0" />
+                      <output id="isoValueValue">0.00</output>
+                    </div>
+                  </div>
+
+                  <div class="field" id="volumeControls">
+                    <span>Volume mode</span>
+                    <select id="volumeRenderMode">
+                      <option value="composite" selected>Composite</option>
+                      <option value="mip">MIP</option>
+                      <option value="slice">Slice</option>
+                    </select>
+
+                    <label class="field compact-field">
+                      <span>Opacity scale</span>
+                      <input id="volumeOpacityScale" type="range" min="0.1" max="4.0" step="0.05" value="1.8" />
+                      <output id="volumeOpacityScaleValue">1.80</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Sample distance scale</span>
+                      <input id="volumeSampleDistanceScale" type="range" min="0.4" max="4.0" step="0.05" value="1.2" />
+                      <output id="volumeSampleDistanceScaleValue">1.20</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Image sample distance</span>
+                      <input id="volumeImageSampleDistance" type="range" min="0.5" max="6.0" step="0.1" value="2.2" />
+                      <output id="volumeImageSampleDistanceValue">2.20</output>
+                    </label>
+
+                    <label class="check-row">
+                      <input id="volumeShade" type="checkbox" checked />
+                      <span>Shading</span>
+                    </label>
+                  </div>
+
+                  <div class="field hidden" id="sliceControls">
+                    <span>Slice controls</span>
+                    <select id="sliceAxis">
+                      <option value="x">X</option>
+                      <option value="y">Y</option>
+                      <option value="z" selected>Z</option>
+                    </select>
+                    <input id="slicePosition" type="range" min="0" max="1" step="0.01" value="0.5" />
+                    <output id="slicePositionValue">0.50</output>
+                  </div>
+
+                  <div class="field" id="cropControls">
+                    <label class="check-row">
+                      <input id="cropEnabled" type="checkbox" />
+                      <span>Enable cropping</span>
+                    </label>
+                    <div class="crop-grid">
+                      <label class="field compact-field">
+                        <span>X min/max</span>
+                        <div class="inline-field">
+                          <input id="cropXMin" type="number" min="0" max="1" step="0.01" value="0.00" />
+                          <input id="cropXMax" type="number" min="0" max="1" step="0.01" value="1.00" />
+                        </div>
+                      </label>
+                      <label class="field compact-field">
+                        <span>Y min/max</span>
+                        <div class="inline-field">
+                          <input id="cropYMin" type="number" min="0" max="1" step="0.01" value="0.00" />
+                          <input id="cropYMax" type="number" min="0" max="1" step="0.01" value="1.00" />
+                        </div>
+                      </label>
+                      <label class="field compact-field">
+                        <span>Z min/max</span>
+                        <div class="inline-field">
+                          <input id="cropZMin" type="number" min="0" max="1" step="0.01" value="0.00" />
+                          <input id="cropZMax" type="number" min="0" max="1" step="0.01" value="1.00" />
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                </section>
+              </section>
+
+              <section class="tab-panel" data-tab-panel="metrics" role="tabpanel" aria-labelledby="tabButtonMetrics">
+                <section class="control-card compact">
+                  <div class="card-heading">
+                    <h2>Runtime Metrics</h2>
+                    <span class="badge subtle" id="metricsStatus">idle</span>
+                  </div>
+
+                  <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">Session ID</span>
+                      <span class="metric-value" id="metricsSessionId">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Visualization</span>
+                      <span class="metric-value" id="metricsVisualizationMode">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Dataset</span>
+                      <span class="metric-value" id="metricsDataset">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">First frame latency</span>
+                      <span class="metric-value" id="metricsFirstFrameLatency">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Interactive FPS</span>
+                      <span class="metric-value" id="metricsInteractiveFps">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">HQ render time</span>
+                      <span class="metric-value" id="metricsHighQualityRenderTime">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Memory RSS</span>
+                      <span class="metric-value" id="metricsMemoryRss">-</span>
+                    </div>
+                  </div>
+
+                  <h3 class="metrics-subtitle">FITS Import</h3>
+                  <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">fits_open_ms</span>
+                      <span class="metric-value" id="metricsFitsOpen">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">hdu_select_ms</span>
+                      <span class="metric-value" id="metricsHduSelect">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">sanitize_convert_ms</span>
+                      <span class="metric-value" id="metricsSanitizeConvert">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">vtk_build_ms</span>
+                      <span class="metric-value" id="metricsVtkBuild">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">fits_total_ms</span>
+                      <span class="metric-value" id="metricsFitsTotal">-</span>
+                    </div>
+                  </div>
+                </section>
+              </section>
+
+              <section class="tab-panel" data-tab-panel="logs" role="tabpanel" aria-labelledby="tabButtonLogs">
+                <section class="control-card compact">
+                  <div class="card-heading">
+                    <h2>Logs / Metrics</h2>
+                    <button class="ghost-button" id="clearLogButton" type="button">Clear</button>
+                  </div>
+                  <div class="event-log" id="eventLog" aria-live="polite"></div>
+                </section>
+              </section>
             </div>
-
-            <label class="field">
-              <span>Render scale</span>
-              <input id="renderScale" type="range" min="0.5" max="1.5" step="0.05" value="1" />
-              <output id="renderScaleValue">1.00x</output>
-            </label>
-
-            <label class="field">
-              <span>Target bitrate</span>
-              <input id="bitrate" type="range" min="1" max="25" step="1" value="10" />
-              <output id="bitrateValue">10 Mbps</output>
-            </label>
-            <label class="field">
-              <span>Target FPS</span>
-              <input id="targetFps" type="range" min="10" max="60" step="1" value="30" />
-              <output id="targetFpsValue">30 fps</output>
-            </label>
-
-            <div class="toggle-row" role="group" aria-label="Quality mode">
-              <button class="toggle active" id="interactiveModeButton" type="button">Interactive</button>
-              <button class="toggle" id="hqModeButton" type="button">High quality</button>
-            </div>
-          </section>
-
-          <section class="control-card compact">
-            <div class="card-heading">
-              <h2>Activity</h2>
-              <button class="ghost-button" id="clearLogButton" type="button">Clear</button>
-            </div>
-            <div class="event-log" id="eventLog" aria-live="polite"></div>
-          </section>
+          </div>
         </aside>
       </main>
     </div>
 
-    <script type="module" src="/web/app.js?v=20260319a"></script>
+    <script type="module" src="/web/app.js?v=20260319e"></script>
   </body>
 </html>

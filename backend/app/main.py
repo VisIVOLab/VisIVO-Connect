@@ -162,6 +162,12 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "sessionId": session.session_id,
+            "datasetPath": getattr(session.renderer, "dataset_path", None),
+            "datasetName": (
+                Path(getattr(session.renderer, "dataset_path", "")).name
+                if getattr(session.renderer, "dataset_path", None)
+                else None
+            ),
             "mode": session.mode,
             "visualizationMode": session.visualization.mode,
             "isoValue": session.visualization.iso_value,
