@@ -133,7 +133,7 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
         {
             "type": "offer",
             "description": {"type": offer.type, "sdp": offer.sdp},
-            "iceServers": config.ice_servers,
+            "iceServers": config.client_ice_servers,
         }
     )
     return pc

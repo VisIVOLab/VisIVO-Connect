@@ -14,6 +14,7 @@ class AppConfig:
     max_sessions: int
     idle_timeout_s: int
     ice_servers: list[dict[str, Any]]
+    client_ice_servers: list[dict[str, Any]]
 
 
 DEFAULT_ICE_SERVERS = [{"urls": ["stun:stun.l.google.com:19302"]}]
@@ -50,11 +51,17 @@ def _parse_ice_servers(raw: str | None) -> list[dict[str, Any]]:
 
 
 def load_config() -> AppConfig:
+    backend_ice_servers = _parse_ice_servers(os.getenv("VISIVO_ICE_SERVERS"))
+    client_ice_servers_raw = os.getenv("VISIVO_CLIENT_ICE_SERVERS")
+    client_ice_servers = (
+        _parse_ice_servers(client_ice_servers_raw) if client_ice_servers_raw is not None else backend_ice_servers
+    )
     return AppConfig(
         dataset_path=os.getenv("VISIVO_DATACUBE_PATH"),
         auth_token=os.getenv("VISIVO_AUTH_TOKEN"),
         metrics_auth_token=os.getenv("VISIVO_METRICS_TOKEN"),
         max_sessions=int(os.getenv("VISIVO_MAX_SESSIONS", "16")),
         idle_timeout_s=int(os.getenv("VISIVO_IDLE_TIMEOUT_S", "900")),
-        ice_servers=_parse_ice_servers(os.getenv("VISIVO_ICE_SERVERS")),
+        ice_servers=backend_ice_servers,
+        client_ice_servers=client_ice_servers,
     )
