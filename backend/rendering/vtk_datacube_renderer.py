@@ -32,7 +32,8 @@ class VTKDatacubeRenderer:
         self.window_width = 1280
         self.window_height = 720
         self.stability_mode = os.getenv("VISIVO_STABILITY_MODE", "1" if sys.platform == "darwin" else "0") == "1"
-        self._log = logging.getLogger(__name__)
+        # Use uvicorn logger to ensure diagnostics are visible in server console.
+        self._log = logging.getLogger("uvicorn.error")
         self._render_window_backend = "unknown"
         self._render_window_request = os.getenv("VISIVO_VTK_RENDER_WINDOW", "auto").strip().lower()
 
@@ -60,6 +61,7 @@ class VTKDatacubeRenderer:
         self._active_mapper_name = "gpu"
         self._black_frame_streak = 0
         self._black_frame_streak_fallback = 0
+        self._dark_frame_streak_total = 0
         self.volume = vtk.vtkVolume()
         self.volume_property = vtk.vtkVolumeProperty()
         self.outline_actor = vtk.vtkActor()
@@ -103,6 +105,13 @@ class VTKDatacubeRenderer:
         self.interactive_boost = 1.0
         self.set_profile(self.current_profile)
         self.set_visualization_mode("volume")
+        self._log.warning(
+            "Renderer initialized backend=%s request=%s mapper=%s mode=%s",
+            self._render_window_backend,
+            self._render_window_request,
+            self._active_mapper_name,
+            self.visualization_mode,
+        )
 
     def _create_render_window(self) -> vtk.vtkRenderWindow:
         requested = self._render_window_request
@@ -137,7 +146,7 @@ class VTKDatacubeRenderer:
             try:
                 window = cls()
                 self._render_window_backend = class_name
-                self._log.info("Using VTK render window backend: %s", class_name)
+                self._log.warning("Using VTK render window backend: %s", class_name)
                 return window
             except Exception as exc:  # pragma: no cover - backend-specific failure path
                 last_error = exc
@@ -155,6 +164,7 @@ class VTKDatacubeRenderer:
 
     def _configure_scene(self) -> None:
         self.image_data = self._load_image_data()
+        self._log_scalar_summary(self.image_data)
         self._configure_volume_pipeline(self.image_data)
         self._configure_outline(self.image_data)
         self._configure_slice_pipeline(self.image_data)
@@ -167,6 +177,37 @@ class VTKDatacubeRenderer:
             self.renderer.AddActor(self.isosurface_pipeline.actor)
         self.renderer.SetBackground(0.03, 0.04, 0.06)
         self.renderer.ResetCamera()
+
+    def _log_scalar_summary(self, image_data: vtk.vtkImageData) -> None:
+        try:
+            scalars = image_data.GetPointData().GetScalars()
+            if scalars is None:
+                self._log.warning("Loaded image data has no scalars")
+                return
+            values = numpy_support.vtk_to_numpy(scalars)
+            if values.size == 0:
+                self._log.warning("Loaded image data has empty scalar array")
+                return
+            finite = values[np.isfinite(values)]
+            if finite.size == 0:
+                self._log.warning("Loaded image data has no finite values")
+                return
+            p01, p50, p99 = np.percentile(finite, [1.0, 50.0, 99.0]).astype(float)
+            non_zero_ratio = float(np.count_nonzero(np.abs(finite) > 0.0) / finite.size)
+            dims = image_data.GetDimensions()
+            self._log.info(
+                "Dataset summary dims=%s finite=%d min=%.6g max=%.6g p01=%.6g p50=%.6g p99=%.6g nonZero=%.2f%%",
+                dims,
+                int(finite.size),
+                float(finite.min()),
+                float(finite.max()),
+                p01,
+                p50,
+                p99,
+                non_zero_ratio * 100.0,
+            )
+        except Exception:  # pragma: no cover - diagnostic only
+            self._log.exception("Failed to compute dataset scalar summary")
 
     def _configure_volume_pipeline(self, image_data: vtk.vtkImageData) -> None:
         self._configure_mapper(self.gpu_volume_mapper, image_data)
@@ -674,21 +715,35 @@ class VTKDatacubeRenderer:
         if self.visualization_mode != "volume" or self.volume_render_mode == "slice":
             self._black_frame_streak = 0
             self._black_frame_streak_fallback = 0
+            self._dark_frame_streak_total = 0
             return
-        # Detect pathological fully-dark frames from unsupported/offscreen GPU volume path.
-        mean_intensity = float(np.mean(bgr))
-        max_intensity = int(np.max(bgr))
-        dark = max_intensity <= 1 or mean_intensity < 0.35
+        # Detect pathological frames where only dark background is present.
+        sample = bgr[::4, ::4, :] if bgr.shape[0] > 8 and bgr.shape[1] > 8 else bgr
+        mean_intensity = float(np.mean(sample))
+        max_intensity = int(np.max(sample))
+        std_intensity = float(np.std(sample))
+        p99_intensity = float(np.percentile(sample, 99.0))
+        dark = (max_intensity <= 1 or mean_intensity < 0.35) or (std_intensity < 2.0 and p99_intensity < 20.0)
         if not dark:
             self._black_frame_streak = 0
             self._black_frame_streak_fallback = 0
+            self._dark_frame_streak_total = 0
             return
+        self._dark_frame_streak_total += 1
 
         if self._active_mapper_name == "gpu":
             self._black_frame_streak += 1
             if self._black_frame_streak >= 3:
                 self._switch_active_mapper("smart")
                 self._black_frame_streak = 0
+            # Even after GPU fallback attempts, force a visible mode if frames remain dark.
+            if self._dark_frame_streak_total >= 8 and self.volume_render_mode != "slice":
+                self.volume_render_mode = "slice"
+                self._apply_volume_render_mode()
+                self._apply_slice_window_level()
+                self._apply_visualization_mode()
+                self._dark_frame_streak_total = 0
+                self._log.warning("Frame remained background-only; forced slice mode for visibility")
             return
 
         self._black_frame_streak_fallback += 1
@@ -699,6 +754,7 @@ class VTKDatacubeRenderer:
             self._apply_slice_window_level()
             self._apply_visualization_mode()
             self._black_frame_streak_fallback = 0
+            self._dark_frame_streak_total = 0
             self._log.warning("Volume frame remained dark; switched to slice mode fallback")
 
     @property

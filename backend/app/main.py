@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ if WEB_DIR.exists():
 
 sessions = SessionManager(max_sessions=config.max_sessions, idle_timeout_s=config.idle_timeout_s)
 cleanup_task = None
+log = logging.getLogger("uvicorn.error")
 
 
 def _is_authorized(token: str | None, expected: str | None) -> bool:
@@ -96,10 +98,24 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
     video_track = LatestFrameVideoTrack(session)
     pc.addTrack(video_track)
 
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange() -> None:
+        log.warning("PeerConnection state=%s session=%s", pc.connectionState, session.session_id)
+
+    @pc.on("iceconnectionstatechange")
+    async def on_iceconnectionstatechange() -> None:
+        log.warning("ICE state=%s session=%s", pc.iceConnectionState, session.session_id)
+
     @pc.on("icecandidate")
     async def on_icecandidate(candidate: RTCIceCandidate | None) -> None:
         if candidate is None:
             return
+        log.warning(
+            "Local ICE candidate type=%s protocol=%s session=%s",
+            getattr(candidate, "type", "unknown"),
+            getattr(candidate, "protocol", "unknown"),
+            session.session_id,
+        )
         await ws.send_json(
             {
                 "type": "ice",
@@ -113,7 +129,13 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    await ws.send_json({"type": "offer", "description": {"type": offer.type, "sdp": offer.sdp}})
+    await ws.send_json(
+        {
+            "type": "offer",
+            "description": {"type": offer.type, "sdp": offer.sdp},
+            "iceServers": config.ice_servers,
+        }
+    )
     return pc
 
 
@@ -231,6 +253,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             if msg_type in {"ice", "ice-candidate", "webrtc.ice"}:
                 candidate = _normalize_candidate(payload)
                 if candidate and session.peer_connection:
+                    log.warning(
+                        "Remote ICE candidate type=%s protocol=%s session=%s",
+                        getattr(candidate, "type", "unknown"),
+                        getattr(candidate, "protocol", "unknown"),
+                        session.session_id,
+                    )
                     await session.peer_connection.addIceCandidate(candidate)
                 continue
 

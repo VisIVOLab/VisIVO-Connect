@@ -26,6 +26,8 @@ class LatestFrameVideoTrack(VideoStreamTrack):
         # vtkCocoaRenderWindow on macOS must render on main thread.
         force_main_thread = os.getenv("VISIVO_VTK_MAIN_THREAD", "1" if sys.platform == "darwin" else "0") == "1"
         self._render_on_main_thread = force_main_thread
+        self._first_frame_logged = False
+        self._empty_cycles = 0
 
     async def recv(self) -> av.VideoFrame:
         target_fps = min(max(self.session.target_stream_fps, 5.0), 60.0)
@@ -82,6 +84,16 @@ class LatestFrameVideoTrack(VideoStreamTrack):
             delivery_ms = (time.time_ns() - frame_packet.render_finished_ns) / 1e6
             self.session.stats.add_sample(self.session.stats.frame_delivery_latency_ms, delivery_ms)
             self.session.stats.delivered_frames += 1
+            if not self._first_frame_logged:
+                self._first_frame_logged = True
+                self._log.warning(
+                    "First video frame delivered session=%s serial=%s size=%sx%s mode=%s",
+                    self.session.session_id,
+                    frame_packet.serial,
+                    frame_packet.frame_bgr.shape[1],
+                    frame_packet.frame_bgr.shape[0],
+                    frame_packet.mode,
+                )
             self._last_emit_ns = time.time_ns()
             return video_frame
 
@@ -92,6 +104,10 @@ class LatestFrameVideoTrack(VideoStreamTrack):
             repeat.time_base = time_base
             self._last_emit_ns = time.time_ns()
             return repeat
+
+        self._empty_cycles += 1
+        if self._empty_cycles in {30, 120, 300}:
+            self._log.warning("No frame available yet session=%s cycles=%s", self.session.session_id, self._empty_cycles)
 
         blank = av.VideoFrame(width=640, height=360, format="yuv420p")
         blank.pts = pts

@@ -61,6 +61,7 @@ const state = {
   reconnectEnabled: true,
   shouldReconnect: true,
   pc: null,
+  iceServers: null,
   remoteStream: null,
   sessionId: createSessionId(),
   connectionState: "connecting",
@@ -322,7 +323,6 @@ function openSocket() {
     });
     sendRenderParams();
     reportResize(true);
-    maybeCreatePeerConnection();
   });
 
   socket.addEventListener("message", (event) => {
@@ -415,6 +415,7 @@ function handleSocketMessage(raw) {
   switch (message.type) {
     case "offer":
     case "webrtc.offer":
+      updateIceServersFromSignal(message.iceServers);
       maybeCreatePeerConnection();
       applyRemoteDescription(message.description || message);
       break;
@@ -478,9 +479,12 @@ function maybeCreatePeerConnection() {
     return state.pc;
   }
 
+  const defaultIceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
+  const iceServers = Array.isArray(state.iceServers) && state.iceServers.length > 0 ? state.iceServers : defaultIceServers;
   const pc = new RTCPeerConnection({
-    iceServers: [],
+    iceServers,
   });
+  logEvent(`RTC config ICE servers=${iceServers.length}`);
   state.pc = pc;
 
   pc.addEventListener("track", (event) => {
@@ -496,6 +500,7 @@ function maybeCreatePeerConnection() {
 
   pc.addEventListener("icecandidate", (event) => {
     if (event.candidate) {
+      logEvent(`Local ICE candidate (${event.candidate.type || "unknown"})`);
       send({
         type: "ice-candidate",
         candidate: event.candidate,
@@ -545,9 +550,15 @@ async function addIceCandidate(payload) {
     return;
   }
   try {
+    if (candidate && typeof candidate.candidate === "string") {
+      const typeMatch = candidate.candidate.match(/\btyp\s+([a-z]+)/i);
+      const type = typeMatch ? typeMatch[1] : "unknown";
+      logEvent(`Remote ICE candidate (${type})`);
+    }
     await pc.addIceCandidate(candidate);
   } catch (error) {
     console.warn("Failed to add ICE candidate", error);
+    logEvent("Failed to add remote ICE candidate");
   }
 }
 
@@ -570,6 +581,20 @@ function cleanupPeerConnection() {
   state.videoTrackFound = false;
   elements.remoteVideo.srcObject = null;
   elements.stageOverlay.classList.remove("hidden");
+}
+
+function updateIceServersFromSignal(iceServers) {
+  if (!Array.isArray(iceServers) || iceServers.length === 0) {
+    return;
+  }
+  state.iceServers = iceServers
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      urls: entry.urls,
+      username: entry.username,
+      credential: entry.credential,
+    }))
+    .filter((entry) => entry.urls);
 }
 
 function send(payload) {
