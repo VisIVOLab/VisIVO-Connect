@@ -24,9 +24,27 @@ class LatestFrameVideoTrack(VideoStreamTrack):
         self._last_bgr_frame: np.ndarray | None = None
         self._last_emit_ns = 0
         self._log = logging.getLogger(__name__)
-        # vtkCocoaRenderWindow on macOS must render on main thread.
-        force_main_thread = os.getenv("VISIVO_VTK_MAIN_THREAD", "1" if sys.platform == "darwin" else "0") == "1"
-        self._render_on_main_thread = force_main_thread
+        # Some backends (notably EGL and Cocoa) are sensitive to thread affinity.
+        # Keep explicit env override, otherwise auto-select a safe default.
+        main_thread_override = os.getenv("VISIVO_VTK_MAIN_THREAD")
+        if main_thread_override is not None:
+            self._render_on_main_thread = main_thread_override.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            renderer_backend = str(getattr(session.renderer, "_render_window_backend", "")).strip().lower()
+            renderer_request = str(getattr(session.renderer, "_render_window_request", "")).strip().lower()
+            backend_requires_main_thread = (
+                sys.platform == "darwin"
+                or "egl" in renderer_backend
+                or renderer_request in {"egl", "vtkeglrenderwindow"}
+            )
+            self._render_on_main_thread = backend_requires_main_thread
+        self._log.warning(
+            "VideoTrack render threading session=%s main_thread=%s backend=%s request=%s",
+            self.session.session_id,
+            self._render_on_main_thread,
+            getattr(session.renderer, "_render_window_backend", "unknown"),
+            getattr(session.renderer, "_render_window_request", "unknown"),
+        )
         self._render_executor: ThreadPoolExecutor | None = None
         if not self._render_on_main_thread:
             # Keep VTK/EGL calls on a stable worker thread to avoid context issues.

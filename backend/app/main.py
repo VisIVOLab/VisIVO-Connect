@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import aioice.stun
 from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceCandidate, RTCIceServer, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -36,6 +37,43 @@ if WEB_DIR.exists():
 sessions = SessionManager(max_sessions=config.max_sessions, idle_timeout_s=config.idle_timeout_s)
 cleanup_task = None
 log = logging.getLogger("uvicorn.error")
+
+
+def _install_aioice_retry_guard() -> None:
+    """Avoid noisy asyncio callback crashes when STUN retries outlive closed transports.
+
+    Seen on Python 3.11 + aioice where Transaction.__retry may run after underlying
+    DatagramTransport / loop internals are already torn down, raising:
+    - AttributeError: 'NoneType' object has no attribute 'sendto'
+    - AttributeError: 'NoneType' object has no attribute 'call_exception_handler'
+    """
+
+    transaction_cls = aioice.stun.Transaction
+    original = getattr(transaction_cls, "_Transaction__retry", None)
+    if not callable(original) or getattr(transaction_cls, "_visivo_retry_guard_installed", False):
+        return
+
+    def _safe_retry(self: aioice.stun.Transaction) -> None:  # type: ignore[name-defined]
+        try:
+            original(self)
+        except AttributeError as exc:
+            message = str(exc)
+            if "sendto" not in message and "call_exception_handler" not in message:
+                raise
+            future = getattr(self, "_Transaction__future", None)
+            if future is not None and not future.done():
+                future.set_exception(aioice.stun.TransactionTimeout())
+        except RuntimeError as exc:
+            # Defensive path for late callbacks on a closed event loop.
+            if "Event loop is closed" not in str(exc):
+                raise
+            future = getattr(self, "_Transaction__future", None)
+            if future is not None and not future.done():
+                future.set_exception(aioice.stun.TransactionTimeout())
+
+    setattr(transaction_cls, "_Transaction__retry", _safe_retry)
+    setattr(transaction_cls, "_visivo_retry_guard_installed", True)
+    log.warning("Installed aioice retry guard for late STUN callbacks")
 
 
 def _is_authorized(token: str | None, expected: str | None) -> bool:
@@ -353,6 +391,7 @@ async def on_shutdown() -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     global cleanup_task
+    _install_aioice_retry_guard()
 
     async def _cleanup_loop() -> None:
         while True:
