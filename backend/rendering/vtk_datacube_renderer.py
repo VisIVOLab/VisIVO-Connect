@@ -32,10 +32,17 @@ class VTKDatacubeRenderer:
         self.window_width = 1280
         self.window_height = 720
         self.stability_mode = os.getenv("VISIVO_STABILITY_MODE", "1" if sys.platform == "darwin" else "0") == "1"
+        self._log = logging.getLogger(__name__)
+        self._render_window_backend = "unknown"
+        self._render_window_request = os.getenv("VISIVO_VTK_RENDER_WINDOW", "auto").strip().lower()
 
         self.renderer = vtk.vtkRenderer()
-        self.render_window = vtk.vtkRenderWindow()
+        self.render_window = self._create_render_window()
         self.render_window.SetOffScreenRendering(1)
+        if hasattr(self.render_window, "SetUseOffScreenBuffers"):
+            self.render_window.SetUseOffScreenBuffers(1)
+        if hasattr(self.render_window, "SwapBuffersOff"):
+            self.render_window.SwapBuffersOff()
         self.render_window.AddRenderer(self.renderer)
         self.render_window.SetSize(self.window_width, self.window_height)
 
@@ -44,7 +51,6 @@ class VTKDatacubeRenderer:
         self.window_to_image.SetInputBufferTypeToRGB()
         self.window_to_image.ReadFrontBufferOff()
 
-        self._log = logging.getLogger(__name__)
         mapper_cls = getattr(vtk, "vtkGPUVolumeRayCastMapper", None)
         if mapper_cls is None:
             raise RuntimeError("vtkGPUVolumeRayCastMapper is required but not available in this VTK build")
@@ -53,6 +59,7 @@ class VTKDatacubeRenderer:
         self.volume_mapper = self.gpu_volume_mapper
         self._active_mapper_name = "gpu"
         self._black_frame_streak = 0
+        self._black_frame_streak_fallback = 0
         self.volume = vtk.vtkVolume()
         self.volume_property = vtk.vtkVolumeProperty()
         self.outline_actor = vtk.vtkActor()
@@ -97,6 +104,52 @@ class VTKDatacubeRenderer:
         self.set_profile(self.current_profile)
         self.set_visualization_mode("volume")
 
+    def _create_render_window(self) -> vtk.vtkRenderWindow:
+        requested = self._render_window_request
+        is_linux = sys.platform.startswith("linux")
+        is_macos = sys.platform == "darwin"
+
+        if requested in {"egl", "vtkeglrenderwindow"}:
+            candidates = ["vtkEGLRenderWindow"]
+        elif requested in {"osmesa", "vtkosopenglrenderwindow"}:
+            # OSMesa backend is Linux-oriented in VTK; avoid known unsupported platforms.
+            if not is_linux:
+                raise RuntimeError("VISIVO_VTK_RENDER_WINDOW=osmesa is not supported on this operating system")
+            candidates = ["vtkOSOpenGLRenderWindow"]
+        elif requested in {"x", "x11", "vtkrenderwindow"}:
+            candidates = ["vtkRenderWindow"]
+        else:
+            # Safe defaults:
+            # - Linux headless: prefer EGL first, then native render window.
+            # - macOS/others: use native render window (OffScreenRendering enabled above).
+            if is_linux:
+                candidates = ["vtkEGLRenderWindow", "vtkRenderWindow"]
+            elif is_macos:
+                candidates = ["vtkRenderWindow"]
+            else:
+                candidates = ["vtkRenderWindow"]
+
+        last_error: Exception | None = None
+        for class_name in candidates:
+            cls = getattr(vtk, class_name, None)
+            if cls is None:
+                continue
+            try:
+                window = cls()
+                self._render_window_backend = class_name
+                self._log.info("Using VTK render window backend: %s", class_name)
+                return window
+            except Exception as exc:  # pragma: no cover - backend-specific failure path
+                last_error = exc
+                self._log.warning("Failed to initialize VTK render window backend %s: %s", class_name, exc)
+
+        if last_error is not None:
+            raise RuntimeError("Could not initialize a VTK render window backend") from last_error
+        raise RuntimeError(
+            "No compatible VTK render window backend found. "
+            "Try VISIVO_VTK_RENDER_WINDOW=egl/osmesa or run under Xvfb."
+        )
+
     def _load_image_data(self) -> vtk.vtkImageData:
         return load_image_data(self.dataset_path)
 
@@ -136,8 +189,16 @@ class VTKDatacubeRenderer:
         if hasattr(mapper, "SetCropping"):
             mapper.SetCropping(0)
         if isinstance(mapper, vtk.vtkSmartVolumeMapper):
-            if hasattr(mapper, "SetRequestedRenderModeToGPU"):
+            # Headless servers often fail on pure GPU-only mode; prefer robust CPU ray-cast/default.
+            smart_mode = os.getenv("VISIVO_SMART_MAPPER_MODE", "raycast").strip().lower()
+            if smart_mode == "gpu" and hasattr(mapper, "SetRequestedRenderModeToGPU"):
                 mapper.SetRequestedRenderModeToGPU()
+            elif smart_mode == "default" and hasattr(mapper, "SetRequestedRenderModeToDefault"):
+                mapper.SetRequestedRenderModeToDefault()
+            elif hasattr(mapper, "SetRequestedRenderModeToRayCast"):
+                mapper.SetRequestedRenderModeToRayCast()
+            elif hasattr(mapper, "SetRequestedRenderModeToDefault"):
+                mapper.SetRequestedRenderModeToDefault()
 
     def _switch_active_mapper(self, mapper_name: str) -> None:
         if mapper_name == self._active_mapper_name:
@@ -160,12 +221,9 @@ class VTKDatacubeRenderer:
         self._set_slice_index(default_slice)
         self.slice_actor.SetMapper(self.slice_mapper)
         self.slice_actor.GetProperty().SetInterpolationTypeToLinear()
+        self.slice_actor.GetProperty().SetOpacity(1.0)
         self.slice_actor.SetVisibility(0)
-        scalar_lo, scalar_hi = self.get_scalar_range()
-        if scalar_hi <= scalar_lo:
-            scalar_hi = scalar_lo + 1.0
-        self.slice_actor.GetProperty().SetColorWindow(scalar_hi - scalar_lo)
-        self.slice_actor.GetProperty().SetColorLevel((scalar_lo + scalar_hi) * 0.5)
+        self._apply_slice_window_level()
 
     def _configure_volume_transfer_functions(self, image_data: vtk.vtkImageData) -> None:
         lo, hi = self._initial_scalar_range(image_data)
@@ -361,6 +419,7 @@ class VTKDatacubeRenderer:
 
         self._apply_volume_render_mode()
         self._apply_cropping()
+        self._apply_slice_window_level()
         self._apply_visualization_mode()
 
     def set_visualization_mode(self, mode: str) -> None:
@@ -426,6 +485,18 @@ class VTKDatacubeRenderer:
             self.slice_mapper.SetOrientationToY()
         else:
             self.slice_mapper.SetOrientationToZ()
+
+    def _apply_slice_window_level(self) -> None:
+        # Use robust scalar range first to avoid all-black slices with strong outliers.
+        lo, hi = self._volume_scalar_range
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = self.get_scalar_range()
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = 0.0, 1.0
+        window = max(hi - lo, 1e-6)
+        level = (hi + lo) * 0.5
+        self.slice_actor.GetProperty().SetColorWindow(float(window))
+        self.slice_actor.GetProperty().SetColorLevel(float(level))
 
     def _slice_bounds_for_axis(self, axis: str) -> tuple[int, int]:
         if self.image_data is None:
@@ -602,19 +673,33 @@ class VTKDatacubeRenderer:
     def _handle_black_frame_detection(self, bgr: np.ndarray) -> None:
         if self.visualization_mode != "volume" or self.volume_render_mode == "slice":
             self._black_frame_streak = 0
-            return
-        if self._active_mapper_name != "gpu":
+            self._black_frame_streak_fallback = 0
             return
         # Detect pathological fully-dark frames from unsupported/offscreen GPU volume path.
         mean_intensity = float(np.mean(bgr))
         max_intensity = int(np.max(bgr))
-        if max_intensity <= 1 or mean_intensity < 0.35:
+        dark = max_intensity <= 1 or mean_intensity < 0.35
+        if not dark:
+            self._black_frame_streak = 0
+            self._black_frame_streak_fallback = 0
+            return
+
+        if self._active_mapper_name == "gpu":
             self._black_frame_streak += 1
-        else:
-            self._black_frame_streak = 0
-        if self._black_frame_streak >= 3:
-            self._switch_active_mapper("smart")
-            self._black_frame_streak = 0
+            if self._black_frame_streak >= 3:
+                self._switch_active_mapper("smart")
+                self._black_frame_streak = 0
+            return
+
+        self._black_frame_streak_fallback += 1
+        if self._black_frame_streak_fallback >= 5 and self.volume_render_mode != "slice":
+            # Last-resort visibility fallback: switch to orthoslice so user sees data immediately.
+            self.volume_render_mode = "slice"
+            self._apply_volume_render_mode()
+            self._apply_slice_window_level()
+            self._apply_visualization_mode()
+            self._black_frame_streak_fallback = 0
+            self._log.warning("Volume frame remained dark; switched to slice mode fallback")
 
     @property
     def target_update_interval(self) -> float:

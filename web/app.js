@@ -62,7 +62,7 @@ const state = {
   shouldReconnect: true,
   pc: null,
   remoteStream: null,
-  sessionId: crypto.randomUUID(),
+  sessionId: createSessionId(),
   connectionState: "connecting",
   renderMode: "interactive",
   interactionActive: false,
@@ -99,19 +99,12 @@ const state = {
   },
 };
 
-const DEFAULT_WS_URL = (() => {
-  const url = new URL(window.location.href);
-  if (url.protocol === "http:" || url.protocol === "https:") {
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.pathname = "/ws";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  }
-  return "ws://localhost:8080/ws";
-})();
-
-elements.wsUrl.value = new URLSearchParams(window.location.search).get("ws") || DEFAULT_WS_URL;
+const DEFAULT_WS_URL = "/ws";
+{
+  const initialWsUrl = pickInitialWsUrl();
+  elements.wsUrl.value = initialWsUrl && initialWsUrl.trim() ? initialWsUrl.trim() : DEFAULT_WS_URL;
+  console.info("[VisIVO Connect] bootstrap wsUrl=", elements.wsUrl.value, "location=", window.location.href);
+}
 elements.sessionId.textContent = state.sessionId;
 elements.renderScaleValue.textContent = formatScale(state.renderParams.scale);
 elements.bitrateValue.textContent = formatBitrate(state.renderParams.bitrate);
@@ -281,14 +274,14 @@ if (elements.wsUrl.value) {
 }
 
 function connect(url) {
-  if (!url) {
-    setConnectionState("error", "danger", "Missing WebSocket URL");
-    return;
+  const safeUrl = url && url.trim() ? url.trim() : DEFAULT_WS_URL;
+  if (elements.wsUrl && !elements.wsUrl.value.trim()) {
+    elements.wsUrl.value = safeUrl;
   }
 
   disconnect(true);
   const token = elements.authToken.value.trim();
-  state.wsUrl = buildWsUrl(url, token);
+  state.wsUrl = buildWsUrl(safeUrl, token);
   state.shouldReconnect = true;
   state.reconnectAttempts = 0;
   openSocket();
@@ -1039,6 +1032,25 @@ function clamp01(value) {
   return Math.min(1, Math.max(0, value));
 }
 
+function createSessionId() {
+  const c = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  if (c && typeof c.randomUUID === "function") {
+    return c.randomUUID();
+  }
+
+  // RFC4122-ish fallback for older browsers/environments.
+  if (c && typeof c.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    c.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0"));
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+  }
+
+  return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function buildWsUrl(raw, token) {
   const fallback = new URL(window.location.href);
   fallback.protocol = fallback.protocol === "https:" ? "wss:" : "ws:";
@@ -1065,6 +1077,35 @@ function buildWsUrl(raw, token) {
     url.searchParams.delete("token");
   }
   return url.toString();
+}
+
+function pickInitialWsUrl() {
+  const queryWsRaw = new URLSearchParams(window.location.search).get("ws");
+  const queryWs = typeof queryWsRaw === "string" ? queryWsRaw.trim() : "";
+  if (!queryWs) {
+    return DEFAULT_WS_URL;
+  }
+
+  try {
+    const candidate = new URL(queryWs, window.location.href);
+    const isLocalHost =
+      candidate.hostname === "localhost" ||
+      candidate.hostname === "127.0.0.1" ||
+      candidate.hostname === "::1";
+    const pageIsRemote =
+      window.location.hostname !== "localhost" &&
+      window.location.hostname !== "127.0.0.1" &&
+      window.location.hostname !== "::1";
+
+    // If the page is opened on a remote host, ignore stale ?ws=localhost links.
+    if (isLocalHost && pageIsRemote) {
+      return DEFAULT_WS_URL;
+    }
+  } catch {
+    return DEFAULT_WS_URL;
+  }
+
+  return queryWs || DEFAULT_WS_URL;
 }
 
 function logEvent(message) {
