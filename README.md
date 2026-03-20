@@ -104,8 +104,12 @@ Start server:
 ```bash
 source .venv/bin/activate
 export VISIVO_DATACUBE_PATH="$(pwd)/web/data/sample_datacube.npy"  # optional
+export VISIVO_DATASET_ROOT="$(pwd)/web/data"  # optional, enables browser in UI
 # FITS example with explicit HDU:
 # export VISIVO_DATACUBE_PATH="/hpc/data/my_cube.fits#hdu=SCI"
+# Browser-oriented production example:
+# export VISIVO_DATASET_ROOT="/srv/visivo/datasets"
+# export VISIVO_DATACUBE_PATH="/srv/visivo/datasets/demo/cube.fits"
 # optional:
 # export VISIVO_AUTH_TOKEN="demo-secret"
 # export VISIVO_METRICS_TOKEN="metrics-secret"
@@ -130,6 +134,16 @@ Client usage:
 - pinch/wheel = zoom
 - during input: interactive mode
 - on release: high-quality mode
+
+Dataset browser usage:
+
+- if `VISIVO_DATASET_ROOT` is configured, a dataset browser appears in `Data / FITS`
+- browse folders inside the configured root only
+- click a FITS file to make it the active dataset
+- if already connected, the current session reloads that dataset
+- if not connected yet, the selected dataset is used on the next `Connect`
+- reconnect keeps using the selected dataset path for the same client session
+- if `VISIVO_DATASET_ROOT` is not configured, the browser stays hidden and the app falls back to `VISIVO_DATACUBE_PATH`
 
 WS control examples:
 
@@ -191,6 +205,10 @@ Service endpoints:
   - backend version, frontend build, sanitized config summary
 - `GET /api/runtime-config`
   - safe frontend defaults (bitrate/FPS/reconnect/HQ preset/relay-only default)
+  - dataset browser availability and default dataset hints
+- `GET /api/datasets?path=<relative-subdir>`
+  - secure listing limited to `VISIVO_DATASET_ROOT`
+  - returns directories and compatible FITS files only
 
 Burst input test:
 
@@ -374,6 +392,71 @@ New centralized env/config surface (see [.env.example](.env.example)):
   - `VISIVO_SMART_MAPPER_MODE`
   - `VISIVO_VTK_MAIN_THREAD`
 
+### Dataset Configuration Modes
+
+VisIVO Connect supports two complementary dataset-selection modes:
+
+1. Static dataset only
+   - set `VISIVO_DATACUBE_PATH`
+   - leave `VISIVO_DATASET_ROOT` empty
+   - the UI opens the configured dataset, with no file browser
+
+2. Browser-enabled dataset root
+   - set `VISIVO_DATASET_ROOT`
+   - optionally also set `VISIVO_DATACUBE_PATH` as the initial/default dataset
+   - the UI shows a simple browser under `Data / FITS`
+   - users can navigate folders and select a FITS file inside the configured root
+
+How they coexist:
+
+- `VISIVO_DATASET_ROOT` enables browsing
+- `VISIVO_DATACUBE_PATH` remains the fallback/default dataset
+- if both are set, the browser starts from the root and the default dataset is shown as active when it is inside that root
+- if only `VISIVO_DATACUBE_PATH` is set, the app behaves like the previous static-dataset model
+
+### Dataset Browser Security Model
+
+The browser is intentionally restricted:
+
+- only paths relative to `VISIVO_DATASET_ROOT` are accepted
+- absolute paths are rejected
+- `..` traversal is rejected
+- resolved paths must stay inside `VISIVO_DATASET_ROOT`
+- entries resolving outside the root are skipped
+- only supported FITS files are listed as selectable:
+  - `.fits`
+  - `.fit`
+  - `.fts`
+  - `.fits.gz`
+  - `.fit.gz`
+  - `.fts.gz`
+
+`VISIVO_STRICT_DATASET_PATH` behavior:
+
+- `1`:
+  - startup and dataset selection fail fast if the target dataset does not exist
+  - recommended for production
+- `0`:
+  - more permissive startup for development/testing
+
+### UI Dataset Browser
+
+When enabled, the browser is available in `Data / FITS` and shows:
+
+- current folder
+- active dataset
+- folders
+- compatible FITS files
+- a refresh button
+
+Behavior:
+
+- click a directory to enter it
+- click `..` to go up
+- click a FITS file to switch dataset
+- if connected, the renderer reloads that dataset in the current session
+- if disconnected, the selected file is used on the next websocket `hello`
+
 ## Production Startup
 
 Use the included assets instead of hand-writing long `uvicorn` commands:
@@ -394,6 +477,24 @@ Recommended production defaults:
 - keep TURN credentials only in env / service environment
 - expose `GET /healthz` and `GET /readyz` to your supervisor/load balancer
 
+Realistic `.env` example for browser-enabled deploy:
+
+```bash
+VISIVO_APP_ENV=production
+VISIVO_HOST=0.0.0.0
+VISIVO_PORT=11111
+VISIVO_LOG_LEVEL=INFO
+
+VISIVO_DATASET_ROOT=/srv/visivo/datasets
+VISIVO_DATACUBE_PATH=/srv/visivo/datasets/demo/default_cube.fits
+VISIVO_STRICT_DATASET_PATH=1
+
+VISIVO_ALLOWED_ORIGINS='["https://visivo.example.org"]'
+VISIVO_FORCE_RELAY_ONLY=1
+VISIVO_ICE_SERVERS='[{"urls":["turn:turn.example.org:3478?transport=tcp","turn:turn.example.org:3478?transport=udp"],"username":"visivo","credential":"change-me"}]'
+VISIVO_CLIENT_ICE_SERVERS='[{"urls":["turn:turn.example.org:3478?transport=tcp","turn:turn.example.org:3478?transport=udp"],"username":"visivo","credential":"change-me"}]'
+```
+
 ## Recovery / Error Handling Notes
 
 - websocket sessions now keep the renderer session alive across transient control-plane drops; reconnect with the same `sessionId` can resume until idle cleanup removes the session
@@ -409,11 +510,19 @@ Recommended production defaults:
 1. `curl http://HOST:PORT/healthz`
 2. `curl http://HOST:PORT/readyz`
 3. `curl http://HOST:PORT/api/version`
-4. open the client and confirm:
+4. if browser mode is enabled:
+   - `curl "http://HOST:PORT/api/datasets?path="`
+   - confirm folders and FITS files are listed
+5. open the client and confirm:
    - websocket connects
    - `Logs` shows backend/frontend build line
-   - `Metrics` loads for an active session
-5. for WAN deployments, verify TURN reachability and test `?relayOnly=1`
+   - dataset browser is visible if `VISIVO_DATASET_ROOT` is configured
+   - folder navigation works
+   - FITS files are selectable
+   - `Active` dataset updates after selection
+   - rendering resumes correctly after dataset switch
+   - `Metrics` loads for the active session and shows the current dataset
+6. for WAN deployments, verify TURN reachability and test `?relayOnly=1`
 
 ## Residual Risks / TODO
 
@@ -425,4 +534,3 @@ Still not fully production-complete:
 - no persistent dataset cache beyond in-memory process lifetime
 - no GPU resource scheduler / admission control beyond session count
 - no automated packaging for container-based deploys
-
