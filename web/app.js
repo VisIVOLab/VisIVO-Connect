@@ -88,6 +88,11 @@ const elements = {
   metricsWarmupOutline: document.getElementById("metricsWarmupOutline"),
   metricsWarmupSlice: document.getElementById("metricsWarmupSlice"),
   metricsWarmupIsosurface: document.getElementById("metricsWarmupIsosurface"),
+  metricsWarmupSliceDeferred: document.getElementById("metricsWarmupSliceDeferred"),
+  metricsWarmupIsosurfaceDeferred: document.getElementById("metricsWarmupIsosurfaceDeferred"),
+  metricsWarmupSliceDeferredInit: document.getElementById("metricsWarmupSliceDeferredInit"),
+  metricsWarmupIsosurfaceDeferredInit: document.getElementById("metricsWarmupIsosurfaceDeferredInit"),
+  metricsWarmupFirstIsosurfaceActivation: document.getElementById("metricsWarmupFirstIsosurfaceActivation"),
   metricsWarmupAttach: document.getElementById("metricsWarmupAttach"),
   metricsWarmupCamera: document.getElementById("metricsWarmupCamera"),
   metricsWarmupCapabilityDetect: document.getElementById("metricsWarmupCapabilityDetect"),
@@ -2173,6 +2178,11 @@ function renderMetrics(payload) {
   setText(elements.metricsWarmupOutline, formatMs(warmup.outlinePipelineInitMs));
   setText(elements.metricsWarmupSlice, formatMs(warmup.slicePipelineInitMs));
   setText(elements.metricsWarmupIsosurface, formatMs(warmup.isosurfacePipelineInitMs));
+  setText(elements.metricsWarmupSliceDeferred, formatBoolean(warmup.slicePipelineDeferred));
+  setText(elements.metricsWarmupIsosurfaceDeferred, formatBoolean(warmup.isosurfacePipelineDeferred));
+  setText(elements.metricsWarmupSliceDeferredInit, formatMs(warmup.sliceDeferredInitMs));
+  setText(elements.metricsWarmupIsosurfaceDeferredInit, formatMs(warmup.isosurfaceDeferredInitMs));
+  setText(elements.metricsWarmupFirstIsosurfaceActivation, formatMs(warmup.firstIsosurfaceActivationMs));
   setText(elements.metricsWarmupAttach, formatMs(warmup.scenePropAttachMs));
   setText(elements.metricsWarmupCamera, formatMs(warmup.cameraResetMs));
   setText(elements.metricsWarmupCapabilityDetect, formatMs(warmup.capabilityDetectionMs));

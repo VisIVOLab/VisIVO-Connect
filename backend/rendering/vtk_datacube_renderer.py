@@ -51,6 +51,11 @@ class VTKDatacubeRenderer:
             "outlinePipelineInitMs": 0.0,
             "slicePipelineInitMs": 0.0,
             "isosurfacePipelineInitMs": 0.0,
+            "slicePipelineDeferred": True,
+            "isosurfacePipelineDeferred": True,
+            "sliceDeferredInitMs": None,
+            "isosurfaceDeferredInitMs": None,
+            "firstIsosurfaceActivationMs": None,
             "scenePropAttachMs": 0.0,
             "cameraResetMs": 0.0,
             "capabilityDetectionMs": 0.0,
@@ -90,9 +95,13 @@ class VTKDatacubeRenderer:
         self.outline_actor = vtk.vtkActor()
         self.slice_mapper = vtk.vtkImageSliceMapper()
         self.slice_actor = vtk.vtkImageSlice()
+        self._slice_pipeline_initialized = False
+        self._slice_actor_added = False
 
         self.image_data: vtk.vtkImageData | None = None
         self.isosurface_pipeline = None
+        self._isosurface_pipeline_initialized = False
+        self._isosurface_actor_added = False
         self.visualization_mode = "volume"
         self.iso_value: float | None = None
         self.volume_opacity_scale = 1.0
@@ -207,19 +216,9 @@ class VTKDatacubeRenderer:
         outline_started_ns = time.time_ns()
         self._configure_outline(self.image_data)
         self._warmup_metrics["outlinePipelineInitMs"] = (time.time_ns() - outline_started_ns) / 1e6
-        slice_started_ns = time.time_ns()
-        self._configure_slice_pipeline(self.image_data)
-        self._warmup_metrics["slicePipelineInitMs"] = (time.time_ns() - slice_started_ns) / 1e6
-        isosurface_started_ns = time.time_ns()
-        self._configure_isosurface_pipeline(self.image_data)
-        self._warmup_metrics["isosurfacePipelineInitMs"] = (time.time_ns() - isosurface_started_ns) / 1e6
-
         attach_started_ns = time.time_ns()
         self.renderer.AddVolume(self.volume)
         self.renderer.AddActor(self.outline_actor)
-        self.renderer.AddViewProp(self.slice_actor)
-        if self.isosurface_pipeline is not None:
-            self.renderer.AddActor(self.isosurface_pipeline.actor)
         self.renderer.SetBackground(0.03, 0.04, 0.06)
         self._warmup_metrics["scenePropAttachMs"] = (time.time_ns() - attach_started_ns) / 1e6
         camera_started_ns = time.time_ns()
@@ -567,6 +566,19 @@ class VTKDatacubeRenderer:
         self.slice_actor.SetVisibility(0)
         self._apply_slice_window_level()
 
+    def _ensure_slice_pipeline(self) -> None:
+        if self._slice_pipeline_initialized or self.image_data is None:
+            return
+        started_ns = time.time_ns()
+        self._configure_slice_pipeline(self.image_data)
+        if not self._slice_actor_added:
+            self.renderer.AddViewProp(self.slice_actor)
+            self._slice_actor_added = True
+        elapsed_ms = (time.time_ns() - started_ns) / 1e6
+        self._slice_pipeline_initialized = True
+        self._warmup_metrics["sliceDeferredInitMs"] = elapsed_ms
+        self._log.warning("Deferred slice pipeline init completed in %.2fms", elapsed_ms)
+
     def _configure_volume_transfer_functions(self, image_data: vtk.vtkImageData) -> None:
         lo, hi = self._initial_scalar_range(image_data)
         if hi <= lo:
@@ -606,6 +618,19 @@ class VTKDatacubeRenderer:
             visual_mode="high-quality",
         )
         self.isosurface_pipeline.actor.SetVisibility(0)
+
+    def _ensure_isosurface_pipeline(self) -> None:
+        if self._isosurface_pipeline_initialized or self.image_data is None:
+            return
+        started_ns = time.time_ns()
+        self._configure_isosurface_pipeline(self.image_data)
+        if self.isosurface_pipeline is not None and not self._isosurface_actor_added:
+            self.renderer.AddActor(self.isosurface_pipeline.actor)
+            self._isosurface_actor_added = True
+        elapsed_ms = (time.time_ns() - started_ns) / 1e6
+        self._isosurface_pipeline_initialized = True
+        self._warmup_metrics["isosurfaceDeferredInitMs"] = elapsed_ms
+        self._log.warning("Deferred isosurface pipeline init completed in %.2fms", elapsed_ms)
 
     def _initial_scalar_range(self, image_data: vtk.vtkImageData) -> tuple[float, float]:
         scalars = image_data.GetPointData().GetScalars()
@@ -728,6 +753,8 @@ class VTKDatacubeRenderer:
         if iso_value is None:
             return
         self.iso_value = float(iso_value)
+        if self.visualization_mode == "isosurface":
+            self._ensure_isosurface_pipeline()
         if self.isosurface_pipeline is not None:
             self.isosurface_pipeline.set_iso_value(self.iso_value)
 
@@ -756,13 +783,16 @@ class VTKDatacubeRenderer:
         if isinstance(params.get("shade"), bool):
             self.volume_shade_override = bool(params["shade"])
         if isinstance(params.get("sliceAxis"), str):
+            self._ensure_slice_pipeline()
             normalized_axis = params["sliceAxis"].strip().lower()
             if normalized_axis in {"x", "y", "z"}:
                 self.slice_axis = normalized_axis
                 self._apply_slice_axis()
         if isinstance(params.get("sliceIndex"), (int, float)):
+            self._ensure_slice_pipeline()
             self._set_slice_index(int(params["sliceIndex"]))
         if isinstance(params.get("slicePosition"), (int, float)):
+            self._ensure_slice_pipeline()
             self._set_slice_from_normalized(float(params["slicePosition"]))
         crop_payload = params.get("cropping")
         if isinstance(crop_payload, dict):
@@ -800,8 +830,16 @@ class VTKDatacubeRenderer:
     def _apply_visualization_mode(self) -> None:
         is_volume = self.visualization_mode == "volume"
         show_slice = is_volume and self.volume_render_mode == "slice"
+        if show_slice:
+            self._ensure_slice_pipeline()
+        if not is_volume:
+            isosurface_started_ns = time.time_ns()
+            self._ensure_isosurface_pipeline()
+            if self._warmup_metrics.get("firstIsosurfaceActivationMs") is None:
+                self._warmup_metrics["firstIsosurfaceActivationMs"] = (time.time_ns() - isosurface_started_ns) / 1e6
         self.volume.SetVisibility(1 if is_volume and not show_slice else 0)
-        self.slice_actor.SetVisibility(1 if show_slice else 0)
+        if self._slice_pipeline_initialized:
+            self.slice_actor.SetVisibility(1 if show_slice else 0)
         if self.isosurface_pipeline is not None:
             self.isosurface_pipeline.actor.SetVisibility(0 if is_volume else 1)
         self.outline_actor.SetVisibility(1 if is_volume else 0)
