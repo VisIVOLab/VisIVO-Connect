@@ -5,13 +5,14 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from aiortc import RTCPeerConnection
 
 from backend.core.models import FramePacket, RenderStats, VisualizationState
-from backend.core.config import load_config
+from backend.core.config import dataset_relative_path, load_config
 from backend.core.observability import (
     FitsImportMetrics,
     SessionRuntimeMetrics,
@@ -274,8 +275,12 @@ class RemoteRenderSession:
             self.request_render()
 
     def state_payload(self, text: str | None = None) -> dict[str, Any]:
+        dataset_path = getattr(self.renderer, "dataset_path", None)
         payload: dict[str, Any] = {
             "type": "state",
+            "datasetPath": dataset_path,
+            "datasetRelativePath": dataset_relative_path(dataset_path, allowed_root=load_config().dataset_root),
+            "datasetName": Path(dataset_path.split("#", 1)[0]).name if isinstance(dataset_path, str) and dataset_path else None,
             "mode": self.mode,
             "visualizationMode": self.visualization.mode,
             "isoValue": self.visualization.iso_value,
@@ -288,6 +293,45 @@ class RemoteRenderSession:
         if text:
             payload["text"] = text
         return payload
+
+    def switch_dataset(self, dataset_path: str) -> None:
+        from backend.rendering.vtk_datacube_renderer import VTKDatacubeRenderer
+
+        with self._renderer_lock:
+            previous_renderer = self.renderer
+            replacement = VTKDatacubeRenderer(dataset_path=dataset_path)
+            replacement.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+            replacement.set_mode(self.mode)
+            replacement.set_visualization_mode(self.visualization.mode)
+            if self.visualization.iso_value is not None:
+                replacement.set_iso_value(self.visualization.iso_value)
+            if self.visualization.volume_params:
+                replacement.set_volume_params(self.visualization.volume_params)
+            self.renderer = replacement
+            self.visualization = VisualizationState(
+                mode=self.renderer.get_visualization_mode(),
+                iso_value=self.renderer.get_iso_value(),
+                volume_params=self.renderer.get_volume_params(),
+            )
+            self.import_metrics = consume_last_fits_import_metrics()
+            self.runtime_metrics = SessionRuntimeMetrics()
+            self.runtime_metrics.refresh_memory_rss()
+            self.stats = RenderStats()
+            self._latest_frame = None
+            self.latest_pipeline_metrics = {}
+            self._frame_serial = 0
+            self._dirty = True
+            self._last_input_ns = 0
+            self._last_render_finished_ns = 0
+            self._warmup_task_started = False
+            self._session_started_ns = time.time_ns()
+            self._session_initialized_ns = self._session_started_ns
+            self.hello_received_ns = None
+            self.stream_ready_sent_ns = None
+            self.remote_answer_set_ns = None
+            close_renderer = getattr(previous_renderer, "close", None)
+            if callable(close_renderer):
+                close_renderer()
 
     def effective_quality_profiles(self) -> dict[str, Any]:
         viewport_width = self.viewport.width

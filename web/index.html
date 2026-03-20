@@ -242,6 +242,19 @@
                     <h2>Data / FITS Controls</h2>
                   </div>
 
+                  <div class="field dataset-browser hidden" id="datasetBrowserSection">
+                    <div class="field-row">
+                      <span>Dataset browser</span>
+                      <button class="ghost-button compact-button" id="datasetRefreshButton" type="button">Refresh</button>
+                    </div>
+                    <div class="dataset-browser-meta">
+                      <div><span class="dataset-browser-label">Active</span><span id="datasetActiveFile">-</span></div>
+                      <div><span class="dataset-browser-label">Folder</span><span id="datasetCurrentPath">/</span></div>
+                    </div>
+                    <div class="dataset-browser-status" id="datasetBrowserStatus">Dataset browser unavailable.</div>
+                    <div class="dataset-browser-list" id="datasetBrowserList" role="list" aria-label="Dataset browser"></div>
+                  </div>
+
                   <div class="field" id="isoControls">
                     <span>Iso value</span>
                     <input id="isoValue" type="range" min="-1" max="1" step="0.01" value="0" />

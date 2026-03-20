@@ -102,6 +102,7 @@ DEFAULT_ICE_SERVERS = [{"urls": ["stun:stun.l.google.com:19302"]}]
 _VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 _VALID_APP_ENVS = {"development", "production", "test"}
 _VALID_HQ_PRESETS = {"balanced", "sharp", "ultra"}
+_BROWSABLE_FITS_SUFFIXES = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fts.gz")
 
 
 def _parse_bool(raw: str | None, default: bool = False) -> bool:
@@ -246,6 +247,70 @@ def _resolve_dataset_url(raw_path: str, allowed_root: str | None) -> str:
             raise ConfigError(f"Dataset path {resolved} is outside VISIVO_DATASET_ROOT") from exc
     rebuilt = SplitResult(parsed.scheme, parsed.netloc, str(resolved), parsed.query, parsed.fragment)
     return urlunsplit(rebuilt)
+
+
+def dataset_root_path(allowed_root: str | None) -> Path:
+    if not allowed_root or not str(allowed_root).strip():
+        raise ConfigError("VISIVO_DATASET_ROOT is not configured")
+    root_path = Path(allowed_root).expanduser().resolve(strict=False)
+    if not root_path.exists():
+        raise ConfigError(f"VISIVO_DATASET_ROOT does not exist: {root_path}")
+    if not root_path.is_dir():
+        raise ConfigError(f"VISIVO_DATASET_ROOT is not a directory: {root_path}")
+    return root_path
+
+
+def is_supported_dataset_file(path: Path) -> bool:
+    path_name = path.name.lower()
+    return any(path_name.endswith(suffix) for suffix in _BROWSABLE_FITS_SUFFIXES)
+
+
+def resolve_dataset_browser_path(
+    relative_path: str | None,
+    *,
+    allowed_root: str | None,
+    expect_directory: bool | None = None,
+    strict_exists: bool = True,
+) -> tuple[Path, str]:
+    root_path = dataset_root_path(allowed_root)
+    raw_relative = (relative_path or "").strip().replace("\\", "/")
+    if raw_relative in {"", "."}:
+        target = root_path
+    else:
+        if raw_relative.startswith("/") or raw_relative.startswith("~"):
+            raise ConfigError("Dataset browser path must be relative to VISIVO_DATASET_ROOT")
+        parts = [part for part in raw_relative.split("/") if part not in {"", "."}]
+        if any(part == ".." for part in parts):
+            raise ConfigError("Dataset browser path cannot contain '..'")
+        target = root_path.joinpath(*parts).resolve(strict=False)
+    try:
+        target.relative_to(root_path)
+    except ValueError as exc:
+        raise ConfigError(f"Dataset browser path {target} is outside VISIVO_DATASET_ROOT") from exc
+    if strict_exists and not target.exists():
+        raise ConfigError(f"Dataset browser path does not exist: {target}")
+    if expect_directory is True and not target.is_dir():
+        raise ConfigError(f"Dataset browser path is not a directory: {target}")
+    if expect_directory is False and not target.is_file():
+        raise ConfigError(f"Dataset browser path is not a file: {target}")
+    relative = target.relative_to(root_path).as_posix() if target != root_path else ""
+    return target, relative
+
+
+def dataset_relative_path(raw_path: str | None, *, allowed_root: str | None) -> str | None:
+    candidate = (raw_path or "").strip()
+    if not candidate or not allowed_root:
+        return None
+    parsed = urlsplit(candidate)
+    target = Path(parsed.path).expanduser().resolve(strict=False)
+    root_path = dataset_root_path(allowed_root)
+    try:
+        relative = target.relative_to(root_path).as_posix()
+    except ValueError:
+        return None
+    if parsed.fragment:
+        return f"{relative}#{parsed.fragment}"
+    return relative
 
 
 

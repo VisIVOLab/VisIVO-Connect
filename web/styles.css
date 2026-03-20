@@ -598,9 +598,125 @@ input {
   margin-bottom: 8px;
 }
 
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .field span {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.compact-button {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 12px;
+  font-size: 0.82rem;
+}
+
+.dataset-browser {
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(8, 14, 22, 0.48);
+  border: 1px solid rgba(140, 173, 211, 0.1);
+}
+
+.dataset-browser-meta {
+  display: grid;
+  gap: 6px;
+}
+
+.dataset-browser-meta div {
+  display: grid;
+  gap: 2px;
+}
+
+.dataset-browser-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(158, 178, 201, 0.8);
+}
+
+.dataset-browser-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.dataset-browser-status[data-tone="danger"] {
+  color: var(--danger);
+}
+
+.dataset-browser-list {
+  max-height: 240px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.dataset-entry {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(6, 12, 20, 0.72);
+  border: 1px solid rgba(140, 173, 211, 0.12);
+  color: var(--text);
+  text-align: left;
+}
+
+.dataset-entry:hover {
+  border-color: rgba(87, 215, 255, 0.28);
+  background: rgba(12, 20, 31, 0.9);
+}
+
+.dataset-entry-directory .dataset-entry-name::before {
+  content: "▸ ";
+  color: var(--accent);
+}
+
+.dataset-entry-file .dataset-entry-name::before {
+  content: "FITS ";
+  color: rgba(167, 255, 207, 0.9);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.dataset-entry-active {
+  border-color: rgba(167, 255, 207, 0.28);
+  background: rgba(18, 31, 26, 0.72);
+}
+
+.dataset-entry-name,
+.dataset-entry-meta {
+  min-width: 0;
+}
+
+.dataset-entry-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-entry-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.dataset-browser-empty {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(6, 12, 20, 0.52);
+  border: 1px dashed rgba(140, 173, 211, 0.12);
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .field input[type="text"] {

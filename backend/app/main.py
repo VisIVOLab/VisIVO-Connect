@@ -17,7 +17,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from backend.core.config import AppConfig, ConfigError, load_config, resolve_dataset_path
+from backend.core.config import (
+    AppConfig,
+    ConfigError,
+    dataset_relative_path,
+    dataset_root_path,
+    is_supported_dataset_file,
+    load_config,
+    resolve_dataset_browser_path,
+    resolve_dataset_path,
+)
 from backend.core.session import RemoteRenderSession, SessionManager
 from backend.transport.video_track import LatestFrameVideoTrack
 
@@ -345,6 +354,92 @@ def _is_authorized(token: str | None, expected: str | None) -> bool:
     if not expected:
         return True
     return bool(token) and token == expected
+
+
+def _request_token(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        bearer = auth_header[7:].strip()
+        if bearer:
+            return bearer
+    query_token = request.query_params.get("token")
+    return query_token.strip() if isinstance(query_token, str) and query_token.strip() else None
+
+
+def _dataset_browser_listing(relative_path: str | None, *, active_dataset_path: str | None = None) -> dict[str, Any]:
+    root_path = dataset_root_path(config.dataset_root)
+    current_path, current_relative = resolve_dataset_browser_path(
+        relative_path,
+        allowed_root=config.dataset_root,
+        expect_directory=True,
+        strict_exists=True,
+    )
+    parent_relative: str | None = None
+    if current_path != root_path:
+        parent_relative = current_path.parent.relative_to(root_path).as_posix() if current_path.parent != root_path else ""
+    active_relative = dataset_relative_path(active_dataset_path, allowed_root=config.dataset_root)
+    entries: list[dict[str, Any]] = []
+    for child in sorted(current_path.iterdir(), key=lambda entry: (not entry.is_dir(), entry.name.lower())):
+        if child.name.startswith("."):
+            continue
+        try:
+            resolved_child = child.resolve(strict=False)
+            resolved_child.relative_to(root_path)
+        except (OSError, ValueError):
+            continue
+        is_directory = child.is_dir()
+        is_supported = is_directory or is_supported_dataset_file(child)
+        if not is_supported:
+            continue
+        relative = resolved_child.relative_to(root_path).as_posix()
+        stat_result = child.stat()
+        entries.append(
+            {
+                "name": child.name,
+                "type": "directory" if is_directory else "file",
+                "path": relative,
+                "sizeBytes": None if is_directory else int(stat_result.st_size),
+                "modifiedMs": int(stat_result.st_mtime_ns // 1_000_000),
+                "supported": is_supported_dataset_file(child),
+                "active": relative == active_relative or (
+                    isinstance(active_relative, str) and active_relative.startswith(f"{relative}#")
+                ),
+            }
+        )
+    return {
+        "rootConfigured": True,
+        "currentPath": current_relative,
+        "parentPath": parent_relative,
+        "activeDatasetPath": active_relative,
+        "entries": entries,
+    }
+
+
+def _resolve_requested_dataset_path(requested_dataset_path: str | None) -> str | None:
+    candidate = (requested_dataset_path or "").strip()
+    if candidate and config.dataset_root:
+        try:
+            selected_file, _ = resolve_dataset_browser_path(
+                candidate,
+                allowed_root=config.dataset_root,
+                expect_directory=False,
+                strict_exists=config.strict_dataset_path,
+            )
+        except ConfigError:
+            pass
+        else:
+            return resolve_dataset_path(
+                str(selected_file),
+                default_path=config.dataset_path,
+                allowed_root=config.dataset_root,
+                strict_exists=config.strict_dataset_path,
+            )
+    return resolve_dataset_path(
+        requested_dataset_path,
+        default_path=config.dataset_path,
+        allowed_root=config.dataset_root,
+        strict_exists=config.strict_dataset_path,
+    )
 
 
 def _pc_config_from_env() -> RTCConfiguration:
@@ -754,7 +849,24 @@ async def api_version() -> JSONResponse:
 
 @app.get("/api/runtime-config")
 async def api_runtime_config() -> JSONResponse:
-    return JSONResponse(config.public_runtime_config())
+    payload = config.public_runtime_config()
+    payload["datasetBrowserEnabled"] = bool(config.dataset_root)
+    payload["defaultDatasetPath"] = config.dataset_path
+    payload["defaultDatasetRelativePath"] = dataset_relative_path(config.dataset_path, allowed_root=config.dataset_root)
+    return JSONResponse(payload)
+
+
+@app.get("/api/datasets")
+async def api_datasets(request: Request) -> JSONResponse:
+    if not _is_authorized(_request_token(request), config.auth_token):
+        return _error_response("unauthorized", "unauthorized", phase="dataset-browser", status_code=401)
+    try:
+        payload = _dataset_browser_listing(request.query_params.get("path"), active_dataset_path=config.dataset_path)
+    except ConfigError as exc:
+        return _error_response("dataset-browser-unavailable", str(exc), phase="dataset-browser", status_code=400)
+    except OSError as exc:
+        return _error_response("dataset-browser-io", str(exc), phase="dataset-browser", status_code=500)
+    return JSONResponse(payload)
 
 
 @app.get("/api/metrics/{session_id}")
@@ -866,12 +978,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     phase = "hello"
                     requested_session_id = payload.get("sessionId")
                     requested_dataset_path = payload.get("datasetPath")
-                    dataset_path = resolve_dataset_path(
-                        requested_dataset_path,
-                        default_path=config.dataset_path,
-                        allowed_root=config.dataset_root,
-                        strict_exists=config.strict_dataset_path,
-                    )
+                    dataset_path = _resolve_requested_dataset_path(requested_dataset_path)
                     if config.strict_dataset_path and not dataset_path:
                         raise ClientFacingError(
                             "dataset-required",
@@ -1020,6 +1127,41 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     )
                     continue
 
+                if msg_type in {"dataset.select", "dataset.switch"}:
+                    phase = "dataset-switch"
+                    selected_relative_path = payload.get("path", payload.get("relativePath"))
+                    selected_file, _ = resolve_dataset_browser_path(
+                        selected_relative_path,
+                        allowed_root=config.dataset_root,
+                        expect_directory=False,
+                        strict_exists=True,
+                    )
+                    if not is_supported_dataset_file(selected_file):
+                        raise ClientFacingError(
+                            "dataset-unsupported",
+                            "Selected file is not a supported FITS dataset",
+                            phase=phase,
+                            retryable=False,
+                            details={"path": str(selected_relative_path or "")},
+                        )
+                    dataset_path = resolve_dataset_path(
+                        str(selected_file),
+                        allowed_root=config.dataset_root,
+                        strict_exists=True,
+                    )
+                    if not dataset_path:
+                        raise ClientFacingError(
+                            "dataset-invalid",
+                            "Could not resolve selected dataset",
+                            phase=phase,
+                            retryable=False,
+                        )
+                    session.switch_dataset(dataset_path)
+                    await _emit_state(ws, session, text=f"Dataset loaded: {selected_file.name}")
+                    if session.maybe_start_warmup_task():
+                        asyncio.create_task(_prime_session_frame(session))
+                    continue
+
                 if msg_type == "interaction.start":
                     phase = "interaction"
                     session.begin_interaction()
@@ -1160,6 +1302,11 @@ async def on_startup() -> None:
     STARTUP_ERRORS.clear()
     if not WEB_DIR.exists():
         STARTUP_ERRORS.append(f"web directory not found: {WEB_DIR}")
+    if config.dataset_root:
+        try:
+            dataset_root_path(config.dataset_root)
+        except ConfigError as exc:
+            STARTUP_ERRORS.append(str(exc))
     if config.dataset_path:
         try:
             resolve_dataset_path(
