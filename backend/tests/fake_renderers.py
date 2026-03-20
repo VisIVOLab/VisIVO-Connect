@@ -194,7 +194,7 @@ class SessionFakeRenderer:
     def apply_zoom(self, zoom_factor: float) -> None:
         return
 
-    def render_bgr_frame(self) -> tuple[np.ndarray, int, int, dict[str, Any]]:
+    def render_rgb_frame(self) -> tuple[np.ndarray, int, int, dict[str, Any]]:
         started_ns = time.time_ns()
         if self._render_latency_s > 0.0:
             time.sleep(self._render_latency_s)

@@ -162,8 +162,8 @@ def _selected_candidate_pair(report: Any) -> tuple[Any | None, Any | None, Any |
 
 
 class _JpegEncoder:
-    def encode(self, frame_bgr: Any) -> bytes:
-        frame = np.ascontiguousarray(frame_bgr)
+    def encode(self, frame_rgb: Any) -> bytes:
+        frame = np.ascontiguousarray(frame_rgb)
         if frame.dtype != np.uint8:
             frame = np.clip(frame, 0, 255).astype(np.uint8, copy=False)
         height = int(frame.shape[0])
@@ -176,7 +176,7 @@ class _JpegEncoder:
         codec.options = {"q": "5"}
         codec.open()
 
-        video_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
+        video_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
         packets = codec.encode(video_frame)
         packets.extend(codec.encode(None))
         if not packets:
@@ -415,7 +415,7 @@ async def _ws_stream_loop(
                 continue
 
             encode_started_ns = time.time_ns()
-            jpeg_bytes = encoder.encode(frame_packet.frame_bgr)
+            jpeg_bytes = encoder.encode(frame_packet.frame_rgb)
             encode_ms = (time.time_ns() - encode_started_ns) / 1e6
             session.stats.add_sample(session.stats.encode_time_ms, encode_ms)
             session.stats.add_sample(session.stats.rtp_pacing_time_ms, 0.0)
@@ -443,8 +443,8 @@ async def _ws_stream_loop(
                     "serial": frame_packet.serial,
                     "mime": "image/jpeg",
                     "data": base64.b64encode(jpeg_bytes).decode("ascii"),
-                    "width": int(frame_packet.frame_bgr.shape[1]),
-                    "height": int(frame_packet.frame_bgr.shape[0]),
+                    "width": int(frame_packet.frame_rgb.shape[1]),
+                    "height": int(frame_packet.frame_rgb.shape[0]),
                     "sessionId": session.session_id,
                 }
             )

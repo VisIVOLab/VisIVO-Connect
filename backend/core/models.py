@@ -36,7 +36,7 @@ class RenderStats:
 @dataclass
 class FramePacket:
     serial: int
-    frame_bgr: Any
+    frame_rgb: Any
     render_started_ns: int
     render_finished_ns: int
     mode: str

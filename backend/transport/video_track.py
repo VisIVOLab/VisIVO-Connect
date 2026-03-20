@@ -21,7 +21,7 @@ class LatestFrameVideoTrack(VideoStreamTrack):
         super().__init__()
         self.session = session
         self._last_serial = -1
-        self._last_bgr_frame: np.ndarray | None = None
+        self._last_rgb_frame: np.ndarray | None = None
         self._last_emit_ns = 0
         self._log = logging.getLogger(__name__)
         # Some backends (notably EGL and Cocoa) are sensitive to thread affinity.
@@ -85,11 +85,11 @@ class LatestFrameVideoTrack(VideoStreamTrack):
         if frame_packet is not None and frame_packet.serial != self._last_serial:
             encode_started_ns = time.time_ns()
             try:
-                video_frame = av.VideoFrame.from_ndarray(frame_packet.frame_bgr, format="bgr24")
+                video_frame = av.VideoFrame.from_ndarray(frame_packet.frame_rgb, format="rgb24")
             except Exception:
                 self._log.exception("frame conversion failed; fallback to cached frame")
-                if self._last_bgr_frame is not None:
-                    repeat = av.VideoFrame.from_ndarray(self._last_bgr_frame, format="bgr24")
+                if self._last_rgb_frame is not None:
+                    repeat = av.VideoFrame.from_ndarray(self._last_rgb_frame, format="rgb24")
                     repeat.pts = pts
                     repeat.time_base = time_base
                     self._last_emit_ns = time.time_ns()
@@ -102,7 +102,7 @@ class LatestFrameVideoTrack(VideoStreamTrack):
             video_frame.pts = pts
             video_frame.time_base = time_base
             # Keep a raw ndarray copy; avoid reusing/reformatting AVFrame across calls.
-            self._last_bgr_frame = frame_packet.frame_bgr
+            self._last_rgb_frame = frame_packet.frame_rgb
             self._last_serial = frame_packet.serial
 
             encode_ms = (time.time_ns() - encode_started_ns) / 1e6
@@ -129,8 +129,8 @@ class LatestFrameVideoTrack(VideoStreamTrack):
                     "First video frame delivered session=%s serial=%s size=%sx%s mode=%s mapper=%s requested=%s smartRequested=%s smartUsed=%s render=%.2fms readback=%.2fms convert=%.2fms encode=%.2fms total=%.2fms",
                     self.session.session_id,
                     frame_packet.serial,
-                    frame_packet.frame_bgr.shape[1],
-                    frame_packet.frame_bgr.shape[0],
+                    frame_packet.frame_rgb.shape[1],
+                    frame_packet.frame_rgb.shape[0],
                     frame_packet.mode,
                     pipeline_metrics.get("activeMapperClass") or "unknown",
                     pipeline_metrics.get("requestedMapperClass") or "unknown",
@@ -145,9 +145,9 @@ class LatestFrameVideoTrack(VideoStreamTrack):
             self._last_emit_ns = time.time_ns()
             return video_frame
 
-        if self._last_bgr_frame is not None:
+        if self._last_rgb_frame is not None:
             # Rebuild from ndarray instead of AVFrame.reformat() to avoid libswscale crash path.
-            repeat = av.VideoFrame.from_ndarray(self._last_bgr_frame, format="bgr24")
+            repeat = av.VideoFrame.from_ndarray(self._last_rgb_frame, format="rgb24")
             repeat.pts = pts
             repeat.time_base = time_base
             self._last_emit_ns = time.time_ns()

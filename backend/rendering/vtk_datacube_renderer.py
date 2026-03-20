@@ -953,7 +953,7 @@ class VTKDatacubeRenderer:
         camera.SetFocalPoint(*(focal + shift))
         self.renderer.ResetCameraClippingRange()
 
-    def render_bgr_frame(self) -> tuple[np.ndarray, int, int, dict[str, Any]]:
+    def render_rgb_frame(self) -> tuple[np.ndarray, int, int, dict[str, Any]]:
         if self._closed:
             raise RuntimeError("renderer is closed")
         started_ns = time.time_ns()
@@ -971,10 +971,8 @@ class VTKDatacubeRenderer:
         width, height, _ = vtk_image.GetDimensions()
         scalars = vtk_image.GetPointData().GetScalars()
         arr = numpy_support.vtk_to_numpy(scalars).reshape(height, width, 3)
-
-        rgb = np.flipud(arr)
-        bgr = rgb[:, :, ::-1].copy()
-        self._handle_black_frame_detection(bgr)
+        rgb = np.ascontiguousarray(arr[::-1])
+        self._handle_black_frame_detection(rgb)
         finished_ns = time.time_ns()
         mapper_diagnostics = self._active_mapper_diagnostics()
         pipeline_metrics = {
@@ -984,21 +982,25 @@ class VTKDatacubeRenderer:
             "totalFramePipelineTimeMs": (finished_ns - started_ns) / 1e6,
             **mapper_diagnostics,
         }
-        return bgr, started_ns, finished_ns, pipeline_metrics
+        return rgb, started_ns, finished_ns, pipeline_metrics
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
 
-    def _handle_black_frame_detection(self, bgr: np.ndarray) -> None:
+    def _handle_black_frame_detection(self, frame_rgb: np.ndarray) -> None:
         if self.visualization_mode != "volume" or self.volume_render_mode == "slice":
             self._black_frame_streak = 0
             self._black_frame_streak_fallback = 0
             self._dark_frame_streak_total = 0
             return
         # Detect pathological frames where only dark background is present.
-        sample = bgr[::4, ::4, :] if bgr.shape[0] > 8 and bgr.shape[1] > 8 else bgr
+        sample = (
+            frame_rgb[::4, ::4, :]
+            if frame_rgb.shape[0] > 8 and frame_rgb.shape[1] > 8
+            else frame_rgb
+        )
         mean_intensity = float(np.mean(sample))
         max_intensity = int(np.max(sample))
         std_intensity = float(np.std(sample))

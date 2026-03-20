@@ -275,7 +275,7 @@ class RemoteRenderSession:
                 return self._latest_frame
 
         with self._renderer_lock:
-            frame_bgr, started_ns, finished_ns, pipeline_metrics = self.renderer.render_bgr_frame()
+            frame_rgb, started_ns, finished_ns, pipeline_metrics = self.renderer.render_rgb_frame()
         render_ms = float(pipeline_metrics.get("renderTimeMs", (finished_ns - started_ns) / 1e6))
         self.stats.add_sample(self.stats.render_time_ms, render_ms)
         capture_ms = pipeline_metrics.get("frameCaptureReadbackTimeMs")
@@ -305,7 +305,7 @@ class RemoteRenderSession:
         self._frame_serial += 1
         self._latest_frame = FramePacket(
             serial=self._frame_serial,
-            frame_bgr=frame_bgr,
+            frame_rgb=frame_rgb,
             render_started_ns=started_ns,
             render_finished_ns=finished_ns,
             mode=self.mode,
