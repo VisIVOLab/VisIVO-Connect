@@ -3720,6 +3720,7 @@ def get_color_map_catalog() -> list[dict[str, object]]:
             "sampleCount": spec.sample_count,
             "hasAlpha": spec.has_alpha,
             "kind": spec.kind,
+            "previewColors": get_color_map_preview(spec.name),
         }
         for spec in get_color_map_specs()
     ]
@@ -3780,6 +3781,25 @@ def get_color_map_samples(name: str) -> list[tuple[float, float, float, float]]:
     if name in _COLOR_MAP_METADATA:
         return _procedural_samples(name)
     raise KeyError(name)
+
+
+def _rgba_css(rgba: tuple[float, float, float, float]) -> str:
+    r, g, b, a = rgba
+    return f"rgba({int(round(r * 255))}, {int(round(g * 255))}, {int(round(b * 255))}, {a:.3f})"
+
+
+def get_color_map_preview(name: str, count: int = 12) -> list[str]:
+    samples = get_color_map_samples(name)
+    if not samples:
+        return []
+    if len(samples) <= count:
+        return [_rgba_css(sample) for sample in samples]
+    preview: list[str] = []
+    last_index = len(samples) - 1
+    for idx in range(count):
+        source_index = int(round((idx / max(count - 1, 1)) * last_index))
+        preview.append(_rgba_css(samples[source_index]))
+    return preview
 
 
 def _scalar_positions(scale_mode: str, scalar_range: tuple[float, float], count: int, positive_floor: float | None) -> tuple[list[float], str, float | None]:

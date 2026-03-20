@@ -21,6 +21,7 @@ from backend.rendering.vlva_colormaps import (
     build_lookup_table,
     get_color_map_catalog,
     get_color_map_names,
+    get_color_map_preview,
 )
 
 _SCALAR_SUMMARY_CACHE_MAX_ENTRIES = 4
@@ -833,6 +834,7 @@ class VTKDatacubeRenderer:
             "positiveLogFloor": self._volume_palette_application.get("positiveLogFloor"),
             "paletteHasAlpha": self._volume_palette_application.get("hasAlpha", False),
             "paletteKind": self._volume_palette_application.get("kind"),
+            "palettePreviewColors": get_color_map_preview(self.volume_palette),
             "availablePalettes": get_color_map_names(),
             "opacityScale": self.volume_opacity_scale,
             "sampleDistanceScale": self.volume_sample_distance_scale_override,

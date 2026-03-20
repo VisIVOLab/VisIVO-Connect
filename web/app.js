@@ -33,6 +33,8 @@ const elements = {
   volumeOpacityScaleValue: document.getElementById("volumeOpacityScaleValue"),
   volumePalette: document.getElementById("volumePalette"),
   volumeScaleMode: document.getElementById("volumeScaleMode"),
+  volumePalettePreview: document.getElementById("volumePalettePreview"),
+  volumePalettePreviewCaption: document.getElementById("volumePalettePreviewCaption"),
   volumeSampleDistanceScale: document.getElementById("volumeSampleDistanceScale"),
   volumeSampleDistanceScaleValue: document.getElementById("volumeSampleDistanceScaleValue"),
   volumeImageSampleDistance: document.getElementById("volumeImageSampleDistance"),
@@ -209,6 +211,8 @@ const state = {
     palette: "Inferno",
     scaleMode: "linear",
     availablePalettes: ["Inferno"],
+    paletteCatalog: [],
+    palettePreviewColors: [],
     opacityScale: 1.8,
     sampleDistanceScale: null,
     sampleDistanceManual: false,
@@ -504,11 +508,14 @@ elements.volumeOpacityScale.addEventListener("input", () => {
 
 elements.volumePalette.addEventListener("change", () => {
   state.volume.palette = elements.volumePalette.value || "Inferno";
+  state.volume.palettePreviewColors = [];
+  syncPalettePreview();
   sendRenderParams();
 });
 
 elements.volumeScaleMode.addEventListener("change", () => {
   state.volume.scaleMode = elements.volumeScaleMode.value === "log" ? "log" : "linear";
+  syncPalettePreview();
   sendRenderParams();
 });
 
@@ -804,6 +811,9 @@ function handleSocketMessage(raw) {
       }
       if (message.volume && typeof message.volume === "object") {
         mergeVolumeParams(message.volume);
+        if (message.rendererDiagnostics && typeof message.rendererDiagnostics === "object") {
+          mergePaletteCatalog(message.rendererDiagnostics.paletteCatalog);
+        }
         syncVolumeControlsToUI();
       }
       if (message.text) {
@@ -2002,6 +2012,44 @@ function syncVolumePaletteOptions() {
   elements.volumePalette.value = selected;
 }
 
+function mergePaletteCatalog(catalog) {
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    return;
+  }
+  state.volume.paletteCatalog = catalog
+    .filter((entry) => entry && typeof entry === "object" && typeof entry.name === "string")
+    .map((entry) => ({
+      name: entry.name,
+      previewColors: Array.isArray(entry.previewColors)
+        ? entry.previewColors.filter((color) => typeof color === "string" && color.trim())
+        : [],
+    }));
+  if (state.volume.paletteCatalog.length > 0) {
+    state.volume.availablePalettes = state.volume.paletteCatalog.map((entry) => entry.name);
+  }
+}
+
+function currentPalettePreviewColors() {
+  if (Array.isArray(state.volume.palettePreviewColors) && state.volume.palettePreviewColors.length > 0) {
+    return state.volume.palettePreviewColors;
+  }
+  const catalogEntry = Array.isArray(state.volume.paletteCatalog)
+    ? state.volume.paletteCatalog.find((entry) => entry.name === state.volume.palette)
+    : null;
+  if (catalogEntry && Array.isArray(catalogEntry.previewColors) && catalogEntry.previewColors.length > 0) {
+    return catalogEntry.previewColors;
+  }
+  return [];
+}
+
+function syncPalettePreview() {
+  const colors = currentPalettePreviewColors();
+  const gradientColors = colors.length > 0 ? colors.join(", ") : "rgba(0, 0, 0, 0.35), rgba(255, 255, 255, 0.35)";
+  elements.volumePalettePreview.style.background = `linear-gradient(90deg, ${gradientColors})`;
+  const scaleLabel = state.volume.scaleMode === "log" ? "log mapping" : "linear mapping";
+  elements.volumePalettePreviewCaption.textContent = `${state.volume.palette} · ${scaleLabel}`;
+}
+
 function syncVolumeControlsToUI() {
   syncVolumePaletteOptions();
   elements.volumeRenderMode.value = state.volume.renderMode;
@@ -2024,6 +2072,7 @@ function syncVolumeControlsToUI() {
   elements.slicePositionValue.textContent = formatFloat(state.volume.slicePosition);
   elements.cropEnabled.checked = Boolean(state.volume.cropping.enabled);
   syncCropBoundsFromUI();
+  syncPalettePreview();
   toggleVisualizationControls();
 }
 
@@ -2036,6 +2085,11 @@ function mergeVolumeParams(incoming) {
   }
   if (typeof incoming.scaleMode === "string") {
     state.volume.scaleMode = incoming.scaleMode.toLowerCase().startsWith("log") ? "log" : "linear";
+  }
+  if (Array.isArray(incoming.palettePreviewColors) && incoming.palettePreviewColors.length > 0) {
+    state.volume.palettePreviewColors = incoming.palettePreviewColors
+      .filter((value) => typeof value === "string" && value.trim())
+      .map((value) => value.trim());
   }
   if (Array.isArray(incoming.availablePalettes) && incoming.availablePalettes.length > 0) {
     state.volume.availablePalettes = incoming.availablePalettes
