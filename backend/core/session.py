@@ -68,6 +68,7 @@ class RemoteRenderSession:
         self.ice_relay_only: bool = False
         self.latest_ice_metrics: dict[str, Any] = {}
         self._warmup_task_started = False
+        self.requested_quality_profiles: dict[str, Any] = {}
 
         self.request_render()
 
@@ -210,6 +211,7 @@ class RemoteRenderSession:
         render_scale = params.get("scale", payload.get("scale"))
         target_fps = params.get("targetFps", payload.get("targetFps"))
         bitrate_mbps = params.get("bitrateMbps", params.get("bitrate", payload.get("bitrateMbps", payload.get("bitrate"))))
+        quality_profiles = params.get("qualityProfiles", payload.get("qualityProfiles"))
 
         mode_value = params.get("mode", payload.get("mode"))
         quality_mode = self._normalize_quality_mode(mode_value)
@@ -231,6 +233,17 @@ class RemoteRenderSession:
 
         if isinstance(bitrate_mbps, (int, float)):
             self.target_bitrate_mbps = min(max(float(bitrate_mbps), 1.0), 50.0)
+
+        if isinstance(quality_profiles, dict):
+            normalized_profiles: dict[str, Any] = {}
+            interactive = quality_profiles.get("interactive")
+            if isinstance(interactive, dict):
+                normalized_profiles["interactive"] = dict(interactive)
+            high_quality = quality_profiles.get("highQuality", quality_profiles.get("high-quality"))
+            if isinstance(high_quality, dict):
+                normalized_profiles["highQuality"] = dict(high_quality)
+            if normalized_profiles:
+                self.requested_quality_profiles = normalized_profiles
 
         if quality_mode is not None:
             self.set_mode(quality_mode)
@@ -273,6 +286,40 @@ class RemoteRenderSession:
         if text:
             payload["text"] = text
         return payload
+
+    def effective_quality_profiles(self) -> dict[str, Any]:
+        viewport_width = self.viewport.width
+        viewport_height = self.viewport.height
+        viewport_dpr = self.viewport.dpr
+
+        def _profile_request(key: str) -> dict[str, Any]:
+            value = self.requested_quality_profiles.get(key)
+            return value if isinstance(value, dict) else {}
+
+        interactive_req = _profile_request("interactive")
+        hq_req = _profile_request("highQuality")
+        return {
+            "interactive": self.renderer.describe_effective_quality_profile(
+                mode="interactive",
+                width=viewport_width,
+                height=viewport_height,
+                dpr=viewport_dpr,
+                requested_render_scale=interactive_req.get("renderScale"),
+                requested_sample_distance_scale=interactive_req.get("sampleDistanceScale"),
+                requested_image_sample_distance=interactive_req.get("imageSampleDistance"),
+                requested_bitrate_mbps=interactive_req.get("bitrateMbps"),
+            ),
+            "highQuality": self.renderer.describe_effective_quality_profile(
+                mode="high-quality",
+                width=viewport_width,
+                height=viewport_height,
+                dpr=viewport_dpr,
+                requested_render_scale=hq_req.get("renderScale"),
+                requested_sample_distance_scale=hq_req.get("sampleDistanceScale"),
+                requested_image_sample_distance=hq_req.get("imageSampleDistance"),
+                requested_bitrate_mbps=hq_req.get("bitrateMbps"),
+            ),
+        }
 
     def mark_hello_received(self) -> None:
         if self.hello_received_ns is None:

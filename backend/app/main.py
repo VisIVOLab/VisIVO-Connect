@@ -680,6 +680,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "rtpPacingTimeMs": _sample_mean(session.stats.rtp_pacing_time_ms),
                 "totalFramePipelineTimeMs": _sample_mean(session.stats.total_frame_pipeline_time_ms),
             },
+            "effectiveQualityProfiles": session.effective_quality_profiles(),
             "iceMetrics": dict(session.latest_ice_metrics),
             "rendererDiagnostics": session.renderer.get_renderer_diagnostics(),
         }

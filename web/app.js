@@ -107,6 +107,13 @@ const elements = {
   metricsWarmupHiddenPrewarm: document.getElementById("metricsWarmupHiddenPrewarm"),
   metricsWarmupHiddenPrewarmSize: document.getElementById("metricsWarmupHiddenPrewarmSize"),
   metricsWarmupTotal: document.getElementById("metricsWarmupTotal"),
+  metricsEffectiveInteractiveScale: document.getElementById("metricsEffectiveInteractiveScale"),
+  metricsEffectiveInteractiveSampleScale: document.getElementById("metricsEffectiveInteractiveSampleScale"),
+  metricsEffectiveInteractiveImageSample: document.getElementById("metricsEffectiveInteractiveImageSample"),
+  metricsEffectiveHqScale: document.getElementById("metricsEffectiveHqScale"),
+  metricsEffectiveHqSampleScale: document.getElementById("metricsEffectiveHqSampleScale"),
+  metricsEffectiveHqImageSample: document.getElementById("metricsEffectiveHqImageSample"),
+  metricsEffectiveHqBitrate: document.getElementById("metricsEffectiveHqBitrate"),
   metricsActiveMapperClass: document.getElementById("metricsActiveMapperClass"),
   metricsRequestedMapperClass: document.getElementById("metricsRequestedMapperClass"),
   metricsSmartMapperRequestedMode: document.getElementById("metricsSmartMapperRequestedMode"),
@@ -630,6 +637,7 @@ function openSocket() {
         visualizationMode: state.visualization.mode,
         isoValue: state.visualization.isoValue,
         volume: buildVolumeParamsPayload(),
+        qualityProfiles: buildQualityProfilesPayload(),
       },
       forceRelayOnly: state.rtc.forceRelayOnly,
       forceWsFallback: state.transport.forceWsFallback,
@@ -1254,6 +1262,7 @@ function sendRenderParams() {
       visualizationMode: state.visualization.mode,
       isoValue: state.visualization.isoValue,
       volume: buildVolumeParamsPayload(),
+      qualityProfiles: buildQualityProfilesPayload(),
     },
   });
   logEvent(
@@ -2113,6 +2122,23 @@ function effectiveBitrateForMode(mode = state.renderMode) {
   return clampFloat(Math.max(base, currentHqDetailPreset().bitrate), 1, 40, 14);
 }
 
+function buildQualityProfilesPayload() {
+  return {
+    interactive: {
+      renderScale: effectiveRenderScaleForMode("interactive"),
+      sampleDistanceScale: effectiveVolumeSampleDistanceScale("interactive"),
+      imageSampleDistance: effectiveVolumeImageSampleDistance("interactive"),
+      bitrateMbps: effectiveBitrateForMode("interactive"),
+    },
+    highQuality: {
+      renderScale: effectiveRenderScaleForMode("high-quality"),
+      sampleDistanceScale: effectiveVolumeSampleDistanceScale("high-quality"),
+      imageSampleDistance: effectiveVolumeImageSampleDistance("high-quality"),
+      bitrateMbps: effectiveBitrateForMode("high-quality"),
+    },
+  };
+}
+
 function defaultVolumeSampleDistanceScale(mode = state.renderMode) {
   if (state.volume.renderMode === "mip") {
     return mode === "interactive" ? 1.4 : 1.0;
@@ -2161,6 +2187,15 @@ function computeDisplayScaleSummary() {
   }
   const scale = Math.min(rect.width / frameWidth, rect.height / frameHeight);
   return `${scale.toFixed(2)}x (${Math.round(rect.width)}x${Math.round(rect.height)} / ${frameWidth}x${frameHeight})`;
+}
+
+function qualityProfileFallback(mode) {
+  return {
+    renderScale: effectiveRenderScaleForMode(mode),
+    sampleDistanceScale: effectiveVolumeSampleDistanceScale(mode),
+    imageSampleDistance: effectiveVolumeImageSampleDistance(mode),
+    bitrateMbps: effectiveBitrateForMode(mode),
+  };
 }
 
 function createSessionId() {
@@ -2299,8 +2334,11 @@ function renderMetrics(payload) {
   const renderer = payload?.rendererDiagnostics || {};
   const warmup = renderer?.warmupMetrics || {};
   const pipeline = payload?.pipelineMetrics || {};
+  const effectiveQualityProfiles = payload?.effectiveQualityProfiles || {};
   const ice = payload?.iceMetrics || {};
   const datasetName = payload?.datasetName || payload?.datasetPath || "-";
+  const interactiveProfile = effectiveQualityProfiles.interactive || qualityProfileFallback("interactive");
+  const highQualityProfile = effectiveQualityProfiles.highQuality || qualityProfileFallback("high-quality");
 
   setText(elements.metricsSessionId, payload?.sessionId || state.sessionId || "-");
   setText(elements.metricsVisualizationMode, payload?.visualizationMode || "-");
@@ -2358,6 +2396,13 @@ function renderMetrics(payload) {
       : "-"
   );
   setText(elements.metricsWarmupTotal, formatMs(warmup.totalRendererWarmupMs));
+  setText(elements.metricsEffectiveInteractiveScale, formatScale(interactiveProfile.renderScale));
+  setText(elements.metricsEffectiveInteractiveSampleScale, formatFloat(interactiveProfile.sampleDistanceScale));
+  setText(elements.metricsEffectiveInteractiveImageSample, formatFloat(interactiveProfile.imageSampleDistance));
+  setText(elements.metricsEffectiveHqScale, formatScale(highQualityProfile.renderScale));
+  setText(elements.metricsEffectiveHqSampleScale, formatFloat(highQualityProfile.sampleDistanceScale));
+  setText(elements.metricsEffectiveHqImageSample, formatFloat(highQualityProfile.imageSampleDistance));
+  setText(elements.metricsEffectiveHqBitrate, formatBitrate(highQualityProfile.bitrateMbps));
   setText(elements.metricsActiveMapperClass, pipeline.activeMapperClass || renderer.activeMapperClass || "-");
   setText(elements.metricsRequestedMapperClass, pipeline.requestedMapperClass || renderer.requestedMapperClass || "-");
   setText(elements.metricsSmartMapperRequestedMode, pipeline.smartMapperRequestedMode || renderer.smartMapperRequestedMode || "-");

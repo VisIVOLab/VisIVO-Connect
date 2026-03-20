@@ -804,15 +804,92 @@ class VTKDatacubeRenderer:
     def get_warmup_metrics(self) -> dict[str, Any]:
         return dict(self._warmup_metrics)
 
-    def _effective_render_dpr(self, dpr: float) -> float:
+    def _profile_for_mode(self, mode: str) -> QualityProfile:
+        return INTERACTIVE_PROFILE if str(mode).strip().lower() == "interactive" else HIGH_QUALITY_PROFILE
+
+    def _effective_render_dpr(self, dpr: float, *, profile_name: str | None = None) -> float:
+        mode_name = profile_name or getattr(self.current_profile, "name", "high-quality")
         effective_dpr = max(float(dpr), 1.0)
         if self.stability_mode:
-            cap = 1.1 if self.current_profile.name == "interactive" else 1.5
+            cap = 1.1 if mode_name == "interactive" else 1.5
         elif self._selected_render_path == "gpu":
-            cap = 1.05 if self.current_profile.name == "interactive" else 2.0
+            cap = 1.05 if mode_name == "interactive" else 2.0
         else:
-            cap = 1.0 if self.current_profile.name == "interactive" else 1.25
+            cap = 1.0 if mode_name == "interactive" else 1.25
         return min(effective_dpr, cap)
+
+    def _effective_sample_distance_scale(self, profile: QualityProfile, override: float | None = None) -> float:
+        if override is not None:
+            sample_scale = max(0.1, float(override))
+        else:
+            sample_scale = float(profile.sample_distance_scale)
+
+        if profile.name == "interactive":
+            sample_scale *= self.interactive_boost
+        if self.stability_mode:
+            sample_scale = min(max(sample_scale, 1.2), 2.6)
+        return float(sample_scale)
+
+    def describe_effective_quality_profile(
+        self,
+        *,
+        mode: str,
+        width: int,
+        height: int,
+        dpr: float,
+        requested_render_scale: float | None = None,
+        requested_sample_distance_scale: float | None = None,
+        requested_image_sample_distance: float | None = None,
+        requested_bitrate_mbps: float | None = None,
+    ) -> dict[str, Any]:
+        profile = self._profile_for_mode(mode)
+        effective_dpr = self._effective_render_dpr(dpr, profile_name=profile.name)
+        render_scale_input = (
+            self.user_render_scale if requested_render_scale is None else min(max(float(requested_render_scale), 0.4), 2.0)
+        )
+        if self.stability_mode:
+            effective_scale = max(render_scale_input * effective_dpr, 0.4)
+        else:
+            effective_scale = max(profile.render_scale * render_scale_input * effective_dpr, 0.2)
+        frame_width = max(64, int(width * effective_scale))
+        frame_height = max(64, int(height * effective_scale))
+        frame_width = frame_width if frame_width % 2 == 0 else frame_width - 1
+        frame_height = frame_height if frame_height % 2 == 0 else frame_height - 1
+
+        sample_scale_override = self.volume_sample_distance_scale_override
+        if requested_sample_distance_scale is not None:
+            sample_scale_override = max(0.1, float(requested_sample_distance_scale))
+        sample_distance_scale = self._effective_sample_distance_scale(profile, sample_scale_override)
+
+        image_sample = self.volume_image_sample_distance_override
+        if requested_image_sample_distance is not None:
+            image_sample = float(requested_image_sample_distance)
+        if image_sample is None:
+            if profile.name == "interactive":
+                image_sample = 1.8 if self._selected_render_path == "gpu" else 2.2
+            else:
+                image_sample = 1.0
+        if self.stability_mode and profile.name == "interactive":
+            image_sample = max(float(image_sample), 2.4)
+        image_sample = self._clamp_image_sample_distance(float(image_sample), profile_name=profile.name)
+
+        bitrate_mbps = None
+        if requested_bitrate_mbps is not None:
+            bitrate_mbps = min(max(float(requested_bitrate_mbps), 1.0), 50.0)
+
+        return {
+            "mode": profile.name,
+            "renderScale": float(effective_scale),
+            "renderScaleInput": float(render_scale_input),
+            "sampleDistanceScale": float(sample_distance_scale),
+            "imageSampleDistance": float(image_sample),
+            "bitrateMbps": bitrate_mbps,
+            "effectiveDpr": float(effective_dpr),
+            "frameWidth": int(frame_width),
+            "frameHeight": int(frame_height),
+            "selectedRenderPath": self._selected_render_path,
+            "stabilityMode": bool(self.stability_mode),
+        }
 
     def prewarm_volume_renderer(self) -> None:
         if self._gpu_volume_prewarmed or self.visualization_mode != "volume":
