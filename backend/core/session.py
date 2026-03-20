@@ -58,6 +58,7 @@ class RemoteRenderSession:
         self._closed = False
         self.last_activity_ns = time.time_ns()
         self.target_stream_fps = 30.0
+        self.target_bitrate_mbps = 14.0
 
         self.peer_connection: RTCPeerConnection | None = None
         self.control_ws: Any | None = None
@@ -208,6 +209,7 @@ class RemoteRenderSession:
 
         render_scale = params.get("scale", payload.get("scale"))
         target_fps = params.get("targetFps", payload.get("targetFps"))
+        bitrate_mbps = params.get("bitrateMbps", params.get("bitrate", payload.get("bitrateMbps", payload.get("bitrate"))))
 
         mode_value = params.get("mode", payload.get("mode"))
         quality_mode = self._normalize_quality_mode(mode_value)
@@ -226,6 +228,9 @@ class RemoteRenderSession:
 
         if isinstance(target_fps, (int, float)):
             self.target_stream_fps = min(max(float(target_fps), 5.0), 60.0)
+
+        if isinstance(bitrate_mbps, (int, float)):
+            self.target_bitrate_mbps = min(max(float(bitrate_mbps), 1.0), 50.0)
 
         if quality_mode is not None:
             self.set_mode(quality_mode)

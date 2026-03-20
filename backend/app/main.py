@@ -109,6 +109,44 @@ def _effective_backend_ice_entries() -> list[dict[str, Any]]:
     return merged
 
 
+def _apply_video_bandwidth_hints(sdp: str, bitrate_mbps: float | int | None) -> str:
+    if not isinstance(sdp, str) or not sdp.strip():
+        return sdp
+    if not isinstance(bitrate_mbps, (int, float)) or bitrate_mbps <= 0:
+        return sdp
+
+    bitrate_bps = int(float(bitrate_mbps) * 1_000_000)
+    bitrate_as = max(1, int(round(bitrate_bps / 1000.0)))
+    lines = sdp.splitlines()
+    result: list[str] = []
+    in_video = False
+    inserted = False
+
+    for line in lines:
+        if line.startswith("m="):
+            if in_video and not inserted:
+                result.append(f"b=AS:{bitrate_as}")
+                result.append(f"b=TIAS:{bitrate_bps}")
+            in_video = line.startswith("m=video ")
+            inserted = False
+            result.append(line)
+            continue
+        if in_video and line.startswith("b="):
+            continue
+        if in_video and not inserted and line.startswith("c="):
+            result.append(line)
+            result.append(f"b=AS:{bitrate_as}")
+            result.append(f"b=TIAS:{bitrate_bps}")
+            inserted = True
+            continue
+        result.append(line)
+
+    if in_video and not inserted:
+        result.append(f"b=AS:{bitrate_as}")
+        result.append(f"b=TIAS:{bitrate_bps}")
+    return "\r\n".join(result) + "\r\n"
+
+
 def _stat_value(stat: Any, key: str, default: Any = None) -> Any:
     if isinstance(stat, dict):
         return stat.get(key, default)
@@ -466,10 +504,16 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket, r
             pc.iceGatheringState,
             gather_wait_ms,
         )
+    offer_sdp = _apply_video_bandwidth_hints(pc.localDescription.sdp, session.target_bitrate_mbps)
+    log.warning(
+        "Offer video bandwidth hints session=%s bitrateMbps=%.2f",
+        session.session_id,
+        session.target_bitrate_mbps,
+    )
     await ws.send_json(
         {
             "type": "offer",
-            "description": {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp},
+            "description": {"type": pc.localDescription.type, "sdp": offer_sdp},
             "iceServers": _client_ice_servers(relay_only),
         }
     )
@@ -667,6 +711,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             if msg_type == "hello":
                 requested_session_id = payload.get("sessionId")
                 dataset_path = payload.get("datasetPath") or config.dataset_path
+                initial_render_params = payload.get("initialRenderParams")
                 force_ws_fallback = bool(payload.get("forceWsFallback"))
                 force_relay_only = bool(payload.get("forceRelayOnly")) or os.getenv("VISIVO_FORCE_RELAY_ONLY", "0") == "1"
                 msg_token = payload.get("token")
@@ -683,6 +728,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     height=int(viewport.get("height", 720)),
                     dpr=float(viewport.get("dpr", 1.0)),
                 )
+                if isinstance(initial_render_params, dict):
+                    session.set_render_params({"params": initial_render_params})
                 if not force_ws_fallback:
                     await _attach_peer_connection(session, ws, relay_only=force_relay_only)
                 else:

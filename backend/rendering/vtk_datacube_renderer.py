@@ -804,6 +804,16 @@ class VTKDatacubeRenderer:
     def get_warmup_metrics(self) -> dict[str, Any]:
         return dict(self._warmup_metrics)
 
+    def _effective_render_dpr(self, dpr: float) -> float:
+        effective_dpr = max(float(dpr), 1.0)
+        if self.stability_mode:
+            cap = 1.1 if self.current_profile.name == "interactive" else 1.5
+        elif self._selected_render_path == "gpu":
+            cap = 1.05 if self.current_profile.name == "interactive" else 2.0
+        else:
+            cap = 1.0 if self.current_profile.name == "interactive" else 1.25
+        return min(effective_dpr, cap)
+
     def prewarm_volume_renderer(self) -> None:
         if self._gpu_volume_prewarmed or self.visualization_mode != "volume":
             return
@@ -1080,7 +1090,10 @@ class VTKDatacubeRenderer:
             self.volume_mapper.SetSampleDistance(self._volume_sample_distance_for_profile(profile))
             image_sample = self.volume_image_sample_distance_override
             if image_sample is None:
-                image_sample = 2.2 if profile.name == "interactive" else 1.0
+                if profile.name == "interactive":
+                    image_sample = 1.8 if self._selected_render_path == "gpu" else 2.2
+                else:
+                    image_sample = 0.7 if self._selected_render_path == "gpu" else 1.0
             if self.stability_mode and profile.name == "interactive":
                 image_sample = max(image_sample, 2.4)
             if hasattr(self.volume_mapper, "SetImageSampleDistance"):
@@ -1101,7 +1114,7 @@ class VTKDatacubeRenderer:
             self.set_profile(HIGH_QUALITY_PROFILE)
 
     def resize(self, width: int, height: int, dpr: float = 1.0) -> None:
-        effective_dpr = min(max(dpr, 1.0), 1.25)
+        effective_dpr = self._effective_render_dpr(dpr)
         if self.stability_mode:
             scale = max(self.user_render_scale * effective_dpr, 0.4)
         else:
@@ -1197,6 +1210,11 @@ class VTKDatacubeRenderer:
             "frameCaptureReadbackTimeMs": (capture_finished_ns - capture_started_ns) / 1e6,
             "frameConversionTimeMs": (finished_ns - conversion_started_ns) / 1e6,
             "totalFramePipelineTimeMs": (finished_ns - started_ns) / 1e6,
+            "frameWidth": int(width),
+            "frameHeight": int(height),
+            "windowWidth": int(self.window_width),
+            "windowHeight": int(self.window_height),
+            "qualityProfile": self.current_profile.name,
             **mapper_diagnostics,
         }
         return rgb, started_ns, finished_ns, pipeline_metrics

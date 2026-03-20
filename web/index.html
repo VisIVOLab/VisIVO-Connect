@@ -127,14 +127,14 @@
 
                   <label class="field">
                     <span>Render scale</span>
-                    <input id="renderScale" type="range" min="0.5" max="1.5" step="0.05" value="1" />
+                    <input id="renderScale" type="range" min="0.5" max="2.0" step="0.05" value="1" />
                     <output id="renderScaleValue">1.00x</output>
                   </label>
 
                   <label class="field">
                     <span>Target bitrate</span>
-                    <input id="bitrate" type="range" min="1" max="25" step="1" value="10" />
-                    <output id="bitrateValue">10 Mbps</output>
+                    <input id="bitrate" type="range" min="1" max="40" step="1" value="14" />
+                    <output id="bitrateValue">14 Mbps</output>
                   </label>
 
                   <label class="field">
@@ -249,14 +249,14 @@
 
                     <label class="field compact-field">
                       <span>Sample distance scale</span>
-                      <input id="volumeSampleDistanceScale" type="range" min="0.4" max="4.0" step="0.05" value="1.2" />
-                      <output id="volumeSampleDistanceScaleValue">1.20</output>
+                      <input id="volumeSampleDistanceScale" type="range" min="0.4" max="4.0" step="0.05" value="0.8" />
+                      <output id="volumeSampleDistanceScaleValue">profile</output>
                     </label>
 
                     <label class="field compact-field">
                       <span>Image sample distance</span>
-                      <input id="volumeImageSampleDistance" type="range" min="0.5" max="6.0" step="0.1" value="2.2" />
-                      <output id="volumeImageSampleDistanceValue">2.20</output>
+                      <input id="volumeImageSampleDistance" type="range" min="0.5" max="6.0" step="0.1" value="0.7" />
+                      <output id="volumeImageSampleDistanceValue">profile</output>
                     </label>
 
                     <label class="check-row">
@@ -536,6 +536,18 @@
 
                   <h3 class="metrics-subtitle">Frame Pipeline</h3>
                   <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">Requested bitrate</span>
+                      <span class="metric-value" id="metricsRequestedBitrate">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Incoming frame</span>
+                      <span class="metric-value" id="metricsStreamFrameSize">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Display scale</span>
+                      <span class="metric-value" id="metricsDisplayScale">-</span>
+                    </div>
                     <div class="metric-row">
                       <span class="metric-label">Active mapper class</span>
                       <span class="metric-value" id="metricsActiveMapperClass">-</span>

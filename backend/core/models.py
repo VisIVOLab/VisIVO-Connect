@@ -59,16 +59,16 @@ class VisualizationState:
 
 INTERACTIVE_PROFILE = QualityProfile(
     name="interactive",
-    render_scale=0.6,
-    sample_distance_scale=2.8,
+    render_scale=0.7,
+    sample_distance_scale=2.2,
     shade=False,
     update_rate_hz=30.0,
 )
 
 HIGH_QUALITY_PROFILE = QualityProfile(
     name="high-quality",
-    render_scale=1.0,
-    sample_distance_scale=1.0,
+    render_scale=1.15,
+    sample_distance_scale=0.8,
     shade=True,
     update_rate_hz=12.0,
 )

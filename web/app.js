@@ -114,6 +114,9 @@ const elements = {
   metricsPipelineEncodeTime: document.getElementById("metricsPipelineEncodeTime"),
   metricsPipelinePacingTime: document.getElementById("metricsPipelinePacingTime"),
   metricsPipelineTotalTime: document.getElementById("metricsPipelineTotalTime"),
+  metricsRequestedBitrate: document.getElementById("metricsRequestedBitrate"),
+  metricsStreamFrameSize: document.getElementById("metricsStreamFrameSize"),
+  metricsDisplayScale: document.getElementById("metricsDisplayScale"),
   metricsIceRelayOnly: document.getElementById("metricsIceRelayOnly"),
   metricsIceGatheringTime: document.getElementById("metricsIceGatheringTime"),
   metricsIceFirstCandidate: document.getElementById("metricsIceFirstCandidate"),
@@ -180,7 +183,7 @@ const state = {
   videoTrackFound: false,
   renderParams: {
     scale: 1,
-    bitrate: 10,
+    bitrate: 14,
     targetFps: 30,
   },
   visualization: {
@@ -192,8 +195,8 @@ const state = {
   volume: {
     renderMode: "composite",
     opacityScale: 1.8,
-    sampleDistanceScale: 1.2,
-    imageSampleDistance: 2.2,
+    sampleDistanceScale: null,
+    imageSampleDistance: null,
     shade: true,
     sliceAxis: "z",
     slicePosition: 0.5,
@@ -264,6 +267,10 @@ const state = {
     wsFallbackActive: false,
     wsFrameCount: 0,
   },
+  display: {
+    incomingFrameWidth: 0,
+    incomingFrameHeight: 0,
+  },
 };
 
 const DEFAULT_WS_URL = "/ws";
@@ -307,9 +314,15 @@ syncTouchTuningUI();
 syncMouseTuningUI();
 installControlPanelUI();
 elements.remoteVideo?.addEventListener("loadedmetadata", () => {
+  state.display.incomingFrameWidth = Number(elements.remoteVideo.videoWidth || 0);
+  state.display.incomingFrameHeight = Number(elements.remoteVideo.videoHeight || 0);
   logEvent(
     `Video loadedmetadata ${elements.remoteVideo.videoWidth}x${elements.remoteVideo.videoHeight} readyState=${elements.remoteVideo.readyState}`
   );
+  const display = computeDisplayScaleSummary();
+  if (display) {
+    logEvent(`Display scale ${display}`);
+  }
   const maybePlay = elements.remoteVideo.play?.();
   if (maybePlay && typeof maybePlay.catch === "function") {
     maybePlay.catch((error) => {
@@ -585,6 +598,15 @@ function openSocket() {
       ua: navigator.userAgent,
       viewport: currentViewport(),
       renderMode: state.renderMode,
+      initialRenderParams: {
+        mode: state.renderMode,
+        scale: state.renderParams.scale,
+        bitrateMbps: state.renderParams.bitrate,
+        targetFps: state.renderParams.targetFps,
+        visualizationMode: state.visualization.mode,
+        isoValue: state.visualization.isoValue,
+        volume: buildVolumeParamsPayload(),
+      },
       forceRelayOnly: state.rtc.forceRelayOnly,
       forceWsFallback: state.transport.forceWsFallback,
     });
@@ -1910,10 +1932,16 @@ function syncVolumeControlsToUI() {
   elements.volumeRenderMode.value = state.volume.renderMode;
   elements.volumeOpacityScale.value = String(state.volume.opacityScale);
   elements.volumeOpacityScaleValue.textContent = formatFloat(state.volume.opacityScale);
-  elements.volumeSampleDistanceScale.value = String(state.volume.sampleDistanceScale);
-  elements.volumeSampleDistanceScaleValue.textContent = formatFloat(state.volume.sampleDistanceScale);
-  elements.volumeImageSampleDistance.value = String(state.volume.imageSampleDistance);
-  elements.volumeImageSampleDistanceValue.textContent = formatFloat(state.volume.imageSampleDistance);
+  const sampleDistanceScale = effectiveVolumeSampleDistanceScale();
+  const imageSampleDistance = effectiveVolumeImageSampleDistance();
+  elements.volumeSampleDistanceScale.value = String(sampleDistanceScale);
+  elements.volumeSampleDistanceScaleValue.textContent = Number.isFinite(state.volume.sampleDistanceScale)
+    ? formatFloat(sampleDistanceScale)
+    : "profile";
+  elements.volumeImageSampleDistance.value = String(imageSampleDistance);
+  elements.volumeImageSampleDistanceValue.textContent = Number.isFinite(state.volume.imageSampleDistance)
+    ? formatFloat(imageSampleDistance)
+    : "profile";
   elements.volumeShade.checked = Boolean(state.volume.shade);
   elements.sliceAxis.value = state.volume.sliceAxis;
   elements.slicePosition.value = String(state.volume.slicePosition);
@@ -1960,11 +1988,9 @@ function mergeVolumeParams(incoming) {
 }
 
 function buildVolumeParamsPayload() {
-  return {
+  const payload = {
     renderMode: state.volume.renderMode,
     opacityScale: state.volume.opacityScale,
-    sampleDistanceScale: state.volume.sampleDistanceScale,
-    imageSampleDistance: state.volume.imageSampleDistance,
     shade: state.volume.shade,
     sliceAxis: state.volume.sliceAxis,
     slicePosition: state.volume.slicePosition,
@@ -1973,6 +1999,13 @@ function buildVolumeParamsPayload() {
       bounds: state.volume.cropping.bounds,
     },
   };
+  if (Number.isFinite(state.volume.sampleDistanceScale)) {
+    payload.sampleDistanceScale = state.volume.sampleDistanceScale;
+  }
+  if (Number.isFinite(state.volume.imageSampleDistance)) {
+    payload.imageSampleDistance = state.volume.imageSampleDistance;
+  }
+  return payload;
 }
 
 function applyAutoContrastPreset() {
@@ -1986,13 +2019,13 @@ function applyAutoContrastPreset() {
   if (state.volume.renderMode === "mip") {
     state.volume.opacityScale = 1.0;
     state.volume.sampleDistanceScale = state.renderMode === "interactive" ? 1.4 : 1.0;
-    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.8 : 1.2;
+    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 0.9;
     state.volume.shade = false;
   } else {
     state.volume.renderMode = "composite";
     state.volume.opacityScale = 2.3;
-    state.volume.sampleDistanceScale = state.renderMode === "interactive" ? 1.2 : 0.9;
-    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 2.0 : 1.2;
+    state.volume.sampleDistanceScale = state.renderMode === "interactive" ? 1.15 : 0.8;
+    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 0.7;
     state.volume.shade = true;
   }
 
@@ -2006,6 +2039,46 @@ function clamp01(value) {
     return 0;
   }
   return Math.min(1, Math.max(0, value));
+}
+
+function defaultVolumeSampleDistanceScale() {
+  if (state.volume.renderMode === "mip") {
+    return state.renderMode === "interactive" ? 1.4 : 1.0;
+  }
+  return state.renderMode === "interactive" ? 1.15 : 0.8;
+}
+
+function defaultVolumeImageSampleDistance() {
+  if (state.volume.renderMode === "mip") {
+    return state.renderMode === "interactive" ? 1.6 : 0.9;
+  }
+  return state.renderMode === "interactive" ? 1.8 : 0.7;
+}
+
+function effectiveVolumeSampleDistanceScale() {
+  return Number.isFinite(state.volume.sampleDistanceScale)
+    ? Number(state.volume.sampleDistanceScale)
+    : defaultVolumeSampleDistanceScale();
+}
+
+function effectiveVolumeImageSampleDistance() {
+  return Number.isFinite(state.volume.imageSampleDistance)
+    ? Number(state.volume.imageSampleDistance)
+    : defaultVolumeImageSampleDistance();
+}
+
+function computeDisplayScaleSummary() {
+  const frameWidth = Number(state.display.incomingFrameWidth || 0);
+  const frameHeight = Number(state.display.incomingFrameHeight || 0);
+  if (!frameWidth || !frameHeight) {
+    return "";
+  }
+  const rect = elements.stageFrame.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) {
+    return "";
+  }
+  const scale = Math.min(rect.width / frameWidth, rect.height / frameHeight);
+  return `${scale.toFixed(2)}x (${Math.round(rect.width)}x${Math.round(rect.height)} / ${frameWidth}x${frameHeight})`;
 }
 
 function createSessionId() {
@@ -2207,6 +2280,16 @@ function renderMetrics(payload) {
   setText(elements.metricsRequestedMapperClass, pipeline.requestedMapperClass || renderer.requestedMapperClass || "-");
   setText(elements.metricsSmartMapperRequestedMode, pipeline.smartMapperRequestedMode || renderer.smartMapperRequestedMode || "-");
   setText(elements.metricsSmartMapperLastUsedMode, pipeline.smartMapperLastUsedMode || renderer.smartMapperLastUsedMode || "-");
+  setText(elements.metricsRequestedBitrate, formatBitrate(state.renderParams.bitrate));
+  setText(
+    elements.metricsStreamFrameSize,
+    Number.isFinite(pipeline.frameWidth) && Number.isFinite(pipeline.frameHeight)
+      ? `${formatInteger(pipeline.frameWidth)}x${formatInteger(pipeline.frameHeight)}`
+      : state.display.incomingFrameWidth > 0 && state.display.incomingFrameHeight > 0
+        ? `${formatInteger(state.display.incomingFrameWidth)}x${formatInteger(state.display.incomingFrameHeight)}`
+        : "-"
+  );
+  setText(elements.metricsDisplayScale, computeDisplayScaleSummary() || "-");
   setText(elements.metricsPipelineRenderTime, formatMs(pipeline.renderTimeMs));
   setText(elements.metricsPipelineCaptureTime, formatMs(pipeline.frameCaptureReadbackTimeMs));
   setText(elements.metricsPipelineConversionTime, formatMs(pipeline.frameConversionTimeMs));
