@@ -624,6 +624,18 @@ input {
   border: 1px solid rgba(140, 173, 211, 0.1);
 }
 
+.dataset-summary-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.dataset-summary-path {
+  color: var(--muted);
+  font-size: 0.82rem;
+  word-break: break-word;
+}
+
 .dataset-browser-meta {
   display: grid;
   gap: 6px;
@@ -656,6 +668,10 @@ input {
   overflow: auto;
   display: grid;
   gap: 8px;
+}
+
+.dataset-browser-list-modal {
+  max-height: min(52vh, 520px);
 }
 
 .dataset-entry {
@@ -717,6 +733,199 @@ input {
   border: 1px dashed rgba(140, 173, 211, 0.12);
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.app-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.app-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 8, 14, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.app-modal-dialog {
+  position: relative;
+  width: min(680px, 100%);
+  max-height: min(88vh, 900px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-radius: 24px;
+  border: 1px solid rgba(140, 173, 211, 0.16);
+  background: linear-gradient(180deg, rgba(14, 23, 36, 0.96), rgba(8, 14, 22, 0.98));
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.app-modal-dialog-wide {
+  width: min(1120px, 100%);
+}
+
+.app-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-bottom: 1px solid rgba(140, 173, 211, 0.1);
+}
+
+.app-modal-title {
+  margin: 2px 0 0;
+  font-size: 1.15rem;
+}
+
+.app-modal-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 22px 22px;
+}
+
+.dataset-modal-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: 18px;
+}
+
+.dataset-modal-pane {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.dataset-details-pane {
+  padding-left: 16px;
+  border-left: 1px solid rgba(140, 173, 211, 0.1);
+}
+
+.dataset-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 36px;
+  align-items: center;
+}
+
+.dataset-breadcrumb-button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(10, 18, 29, 0.7);
+  border: 1px solid rgba(140, 173, 211, 0.16);
+}
+
+.dataset-breadcrumb-sep {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.dataset-details-empty {
+  padding: 18px;
+  border-radius: 16px;
+  background: rgba(6, 12, 20, 0.52);
+  border: 1px dashed rgba(140, 173, 211, 0.12);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.dataset-details {
+  display: grid;
+  gap: 14px;
+}
+
+.dataset-details-title {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.dataset-details-path {
+  color: var(--muted);
+  font-size: 0.82rem;
+  word-break: break-word;
+}
+
+.dataset-details-section {
+  display: grid;
+  gap: 8px;
+}
+
+.dataset-details-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dataset-details-item {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(6, 12, 20, 0.56);
+  border: 1px solid rgba(140, 173, 211, 0.1);
+}
+
+.dataset-details-item-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.dataset-details-item-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.dataset-loading-file {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.35;
+  margin-bottom: 10px;
+}
+
+.dataset-loading-steps {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dataset-loading-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(6, 12, 20, 0.56);
+  border: 1px solid rgba(140, 173, 211, 0.1);
+}
+
+.dataset-loading-step[data-state="active"] {
+  border-color: rgba(87, 215, 255, 0.32);
+}
+
+.dataset-loading-step[data-state="done"] {
+  border-color: rgba(167, 255, 207, 0.22);
+}
+
+.dataset-loading-step-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(158, 178, 201, 0.5);
+}
+
+.dataset-loading-step[data-state="active"] .dataset-loading-step-indicator {
+  background: var(--accent);
+}
+
+.dataset-loading-step[data-state="done"] .dataset-loading-step-indicator {
+  background: var(--accent-strong);
 }
 
 .field input[type="text"] {

@@ -242,17 +242,14 @@
                     <h2>Data / FITS Controls</h2>
                   </div>
 
-                  <div class="field dataset-browser hidden" id="datasetBrowserSection">
+                  <div class="field dataset-summary" id="datasetBrowserSection">
                     <div class="field-row">
-                      <span>Dataset browser</span>
-                      <button class="ghost-button compact-button" id="datasetRefreshButton" type="button">Refresh</button>
+                      <span>Active dataset</span>
+                      <button class="ghost-button compact-button" id="datasetOpenButton" type="button">Open dataset</button>
                     </div>
-                    <div class="dataset-browser-meta">
-                      <div><span class="dataset-browser-label">Active</span><span id="datasetActiveFile">-</span></div>
-                      <div><span class="dataset-browser-label">Folder</span><span id="datasetCurrentPath">/</span></div>
-                    </div>
-                    <div class="dataset-browser-status" id="datasetBrowserStatus">Dataset browser unavailable.</div>
-                    <div class="dataset-browser-list" id="datasetBrowserList" role="list" aria-label="Dataset browser"></div>
+                    <div class="dataset-summary-name" id="datasetActiveFile">-</div>
+                    <div class="dataset-summary-path" id="datasetCurrentPath">Browser unavailable.</div>
+                    <div class="dataset-browser-status" id="datasetBrowserStatus">Configure <code>VISIVO_DATASET_ROOT</code> to enable the browser.</div>
                   </div>
 
                   <div class="field" id="isoControls">
@@ -791,6 +788,76 @@
       </main>
     </div>
 
-    <script type="module" src="/web/app.js?v=20260320h"></script>
+    <div class="app-modal hidden" id="datasetBrowserModal" aria-hidden="true">
+      <div class="app-modal-backdrop" id="datasetBrowserModalBackdrop"></div>
+      <div class="app-modal-dialog app-modal-dialog-wide" role="dialog" aria-modal="true" aria-labelledby="datasetBrowserModalTitle">
+        <div class="app-modal-header">
+          <div>
+            <div class="overlay-kicker">Dataset browser</div>
+            <h2 class="app-modal-title" id="datasetBrowserModalTitle">Open FITS dataset</h2>
+          </div>
+          <button class="ghost-button compact-button" id="datasetBrowserCloseButton" type="button">Close</button>
+        </div>
+        <div class="app-modal-body dataset-modal-layout">
+          <section class="dataset-modal-pane">
+            <div class="field-row">
+              <div class="dataset-breadcrumb" id="datasetBreadcrumb"></div>
+              <button class="ghost-button compact-button" id="datasetRefreshButton" type="button">Refresh</button>
+            </div>
+            <label class="field compact-field">
+              <span>Filter datasets</span>
+              <input id="datasetSearchInput" type="text" placeholder="Search folders or FITS files" spellcheck="false" autocomplete="off" />
+            </label>
+            <div class="dataset-browser-status" id="datasetBrowserStatus">Loading datasets...</div>
+            <div class="dataset-browser-list dataset-browser-list-modal" id="datasetBrowserList" role="list" aria-label="Dataset browser"></div>
+          </section>
+          <section class="dataset-modal-pane dataset-details-pane">
+            <div class="overlay-kicker">Selection</div>
+            <div class="dataset-details-empty" id="datasetDetailsEmpty">Select a FITS file to inspect its details.</div>
+            <div class="dataset-details hidden" id="datasetDetailsPanel">
+              <div class="dataset-details-title" id="datasetDetailsName">-</div>
+              <div class="dataset-details-path" id="datasetDetailsPath">-</div>
+              <div class="metrics-grid">
+                <div class="metric-row"><span class="metric-label">Size</span><span class="metric-value" id="datasetDetailsSize">-</span></div>
+                <div class="metric-row"><span class="metric-label">Modified</span><span class="metric-value" id="datasetDetailsModified">-</span></div>
+                <div class="metric-row"><span class="metric-label">Supported</span><span class="metric-value" id="datasetDetailsSupported">-</span></div>
+                <div class="metric-row"><span class="metric-label">HDU count</span><span class="metric-value" id="datasetDetailsHduCount">-</span></div>
+              </div>
+              <div class="dataset-details-section">
+                <div class="overlay-kicker">HDU summary</div>
+                <div class="dataset-details-list" id="datasetDetailsHdus"></div>
+              </div>
+              <div class="dataset-details-section">
+                <div class="overlay-kicker">Header preview</div>
+                <div class="dataset-details-list" id="datasetDetailsHeader"></div>
+              </div>
+            </div>
+            <div class="button-row">
+              <button class="primary-button" id="datasetOpenSelectedButton" type="button" disabled>Open selected dataset</button>
+              <button class="ghost-button" id="datasetCancelButton" type="button">Cancel</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="app-modal hidden" id="datasetLoadingModal" aria-hidden="true">
+      <div class="app-modal-backdrop"></div>
+      <div class="app-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="datasetLoadingTitle">
+        <div class="app-modal-header">
+          <div>
+            <div class="overlay-kicker">Loading dataset</div>
+            <h2 class="app-modal-title" id="datasetLoadingTitle">Preparing new dataset</h2>
+          </div>
+        </div>
+        <div class="app-modal-body">
+          <div class="dataset-loading-file" id="datasetLoadingFile">-</div>
+          <div class="dataset-browser-status" id="datasetLoadingStatus">Waiting...</div>
+          <div class="dataset-loading-steps" id="datasetLoadingSteps"></div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/web/app.js?v=20260320i"></script>
   </body>
 </html>

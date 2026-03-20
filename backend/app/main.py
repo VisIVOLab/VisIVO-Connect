@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from astropy.io import fits
 from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceCandidate, RTCIceServer, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 import av
@@ -149,6 +150,40 @@ async def _send_ws_error(
             details=details,
         )
     )
+
+
+async def _send_dataset_loading(
+    ws: WebSocket,
+    *,
+    phase: str,
+    label: str,
+    dataset_path: str | None,
+    session: RemoteRenderSession | None = None,
+    done: bool = False,
+) -> None:
+    dataset_name = Path(dataset_path.split("#", 1)[0]).name if isinstance(dataset_path, str) and dataset_path else None
+    relative_path = dataset_relative_path(dataset_path, allowed_root=config.dataset_root)
+    payload: dict[str, Any] = {
+        "type": "dataset.loading",
+        "phase": phase,
+        "label": label,
+        "datasetPath": relative_path or dataset_path,
+        "datasetName": dataset_name,
+        "done": done,
+    }
+    if session is not None:
+        payload["sessionId"] = session.session_id
+        if session.import_metrics is not None:
+            payload["importMetrics"] = {
+                "fitsOpenMs": session.import_metrics.fits_open_ms,
+                "hduSelectMs": session.import_metrics.hdu_select_ms,
+                "sanitizeConvertMs": session.import_metrics.sanitize_convert_ms,
+                "vtkBuildMs": session.import_metrics.vtk_build_ms,
+                "fitsTotalMs": session.import_metrics.fits_total_ms,
+                "cacheHit": session.import_metrics.cache_hit,
+            }
+        payload["warmupMetrics"] = session.renderer.get_warmup_metrics()
+    await ws.send_json(payload)
 
 
 def _startup_snapshot() -> dict[str, Any]:
@@ -413,6 +448,74 @@ def _dataset_browser_listing(relative_path: str | None, *, active_dataset_path: 
         "activeDatasetPath": active_relative,
         "entries": entries,
     }
+
+
+def _dataset_file_details(relative_path: str | None) -> dict[str, Any]:
+    selected_file, selected_relative = resolve_dataset_browser_path(
+        relative_path,
+        allowed_root=config.dataset_root,
+        expect_directory=False,
+        strict_exists=True,
+    )
+    stat_result = selected_file.stat()
+    payload: dict[str, Any] = {
+        "name": selected_file.name,
+        "path": selected_relative,
+        "type": "file",
+        "supported": is_supported_dataset_file(selected_file),
+        "sizeBytes": int(stat_result.st_size),
+        "modifiedMs": int(stat_result.st_mtime_ns // 1_000_000),
+        "fits": None,
+    }
+    if not payload["supported"]:
+        return payload
+
+    hdus: list[dict[str, Any]] = []
+    header_preview: dict[str, Any] = {}
+    with fits.open(selected_file, memmap=True) as hdul:
+        for index, hdu in enumerate(hdul):
+            header = hdu.header
+            shape = getattr(hdu, "shape", None)
+            dtype = None
+            data = getattr(hdu, "data", None)
+            if data is not None:
+                dtype = str(getattr(data, "dtype", None) or "")
+            hdus.append(
+                {
+                    "index": index,
+                    "name": str(header.get("EXTNAME", "") or ""),
+                    "className": type(hdu).__name__,
+                    "shape": list(shape) if isinstance(shape, tuple) else None,
+                    "dtype": dtype or None,
+                    "isImage": bool(data is not None),
+                }
+            )
+        if hdul:
+            first_header = hdul[0].header
+            for key in (
+                "OBJECT",
+                "BTYPE",
+                "BUNIT",
+                "TELESCOP",
+                "INSTRUME",
+                "CTYPE1",
+                "CTYPE2",
+                "CTYPE3",
+                "CUNIT1",
+                "CUNIT2",
+                "CUNIT3",
+                "BSCALE",
+                "BZERO",
+                "BLANK",
+            ):
+                if key in first_header:
+                    header_preview[key] = first_header[key]
+    payload["fits"] = {
+        "hduCount": len(hdus),
+        "hdus": hdus,
+        "headerPreview": header_preview,
+    }
+    return payload
 
 
 def _resolve_requested_dataset_path(requested_dataset_path: str | None) -> str | None:
@@ -869,6 +972,19 @@ async def api_datasets(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+@app.get("/api/datasets/details")
+async def api_dataset_details(request: Request) -> JSONResponse:
+    if not _is_authorized(_request_token(request), config.auth_token):
+        return _error_response("unauthorized", "unauthorized", phase="dataset-browser", status_code=401)
+    try:
+        payload = _dataset_file_details(request.query_params.get("path"))
+    except ConfigError as exc:
+        return _error_response("dataset-details-invalid", str(exc), phase="dataset-browser", status_code=400)
+    except OSError as exc:
+        return _error_response("dataset-details-io", str(exc), phase="dataset-browser", status_code=500)
+    return JSONResponse(payload)
+
+
 @app.get("/api/metrics/{session_id}")
 async def session_metrics(session_id: str, request: Request) -> JSONResponse:
     metrics_token = request.query_params.get("token")
@@ -1156,10 +1272,38 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                             phase=phase,
                             retryable=False,
                         )
+                    await _send_dataset_loading(
+                        ws,
+                        phase="opening-fits",
+                        label="Opening FITS",
+                        dataset_path=dataset_path,
+                        session=session,
+                    )
                     session.switch_dataset(dataset_path)
+                    await _send_dataset_loading(
+                        ws,
+                        phase="initializing-renderer",
+                        label="Initializing renderer",
+                        dataset_path=dataset_path,
+                        session=session,
+                    )
+                    await _send_dataset_loading(
+                        ws,
+                        phase="warming-up",
+                        label="Warming up first frame",
+                        dataset_path=dataset_path,
+                        session=session,
+                    )
+                    session.prime_first_frame()
+                    await _send_dataset_loading(
+                        ws,
+                        phase="complete",
+                        label="Dataset ready",
+                        dataset_path=dataset_path,
+                        session=session,
+                        done=True,
+                    )
                     await _emit_state(ws, session, text=f"Dataset loaded: {selected_file.name}")
-                    if session.maybe_start_warmup_task():
-                        asyncio.create_task(_prime_session_frame(session))
                     continue
 
                 if msg_type == "interaction.start":

@@ -29,11 +29,33 @@ const elements = {
   isoValueValue: document.getElementById("isoValueValue"),
   volumeControls: document.getElementById("volumeControls"),
   datasetBrowserSection: document.getElementById("datasetBrowserSection"),
-  datasetRefreshButton: document.getElementById("datasetRefreshButton"),
+  datasetOpenButton: document.getElementById("datasetOpenButton"),
   datasetActiveFile: document.getElementById("datasetActiveFile"),
   datasetCurrentPath: document.getElementById("datasetCurrentPath"),
   datasetBrowserStatus: document.getElementById("datasetBrowserStatus"),
+  datasetBrowserModal: document.getElementById("datasetBrowserModal"),
+  datasetBrowserModalBackdrop: document.getElementById("datasetBrowserModalBackdrop"),
+  datasetBrowserCloseButton: document.getElementById("datasetBrowserCloseButton"),
+  datasetRefreshButton: document.getElementById("datasetRefreshButton"),
+  datasetSearchInput: document.getElementById("datasetSearchInput"),
+  datasetBreadcrumb: document.getElementById("datasetBreadcrumb"),
   datasetBrowserList: document.getElementById("datasetBrowserList"),
+  datasetDetailsEmpty: document.getElementById("datasetDetailsEmpty"),
+  datasetDetailsPanel: document.getElementById("datasetDetailsPanel"),
+  datasetDetailsName: document.getElementById("datasetDetailsName"),
+  datasetDetailsPath: document.getElementById("datasetDetailsPath"),
+  datasetDetailsSize: document.getElementById("datasetDetailsSize"),
+  datasetDetailsModified: document.getElementById("datasetDetailsModified"),
+  datasetDetailsSupported: document.getElementById("datasetDetailsSupported"),
+  datasetDetailsHduCount: document.getElementById("datasetDetailsHduCount"),
+  datasetDetailsHdus: document.getElementById("datasetDetailsHdus"),
+  datasetDetailsHeader: document.getElementById("datasetDetailsHeader"),
+  datasetOpenSelectedButton: document.getElementById("datasetOpenSelectedButton"),
+  datasetCancelButton: document.getElementById("datasetCancelButton"),
+  datasetLoadingModal: document.getElementById("datasetLoadingModal"),
+  datasetLoadingFile: document.getElementById("datasetLoadingFile"),
+  datasetLoadingStatus: document.getElementById("datasetLoadingStatus"),
+  datasetLoadingSteps: document.getElementById("datasetLoadingSteps"),
   volumeRenderMode: document.getElementById("volumeRenderMode"),
   volumeOpacityScale: document.getElementById("volumeOpacityScale"),
   volumeOpacityScaleValue: document.getElementById("volumeOpacityScaleValue"),
@@ -266,6 +288,16 @@ const state = {
     entries: [],
     loading: false,
     error: "",
+    filter: "",
+    modalOpen: false,
+    selectedPath: "",
+    selectedEntry: null,
+    details: null,
+    detailsLoading: false,
+    detailsError: "",
+    loadingModalOpen: false,
+    loadingStatus: "",
+    loadingSteps: [],
   },
   touch: {
     rotateSensitivity: 0.45,
@@ -437,70 +469,311 @@ function datasetApiUrl(relativePath = "") {
   return url.toString();
 }
 
+function datasetDetailsApiUrl(relativePath = "") {
+  const url = new URL("/api/datasets/details", window.location.origin);
+  if (relativePath) {
+    url.searchParams.set("path", relativePath);
+  }
+  const token = elements.authToken.value.trim();
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+  return url.toString();
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+  const bytes = Number(value);
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 ** 2) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 ** 3) {
+    return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  }
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function formatTimestamp(ms) {
+  if (!Number.isFinite(ms)) {
+    return "-";
+  }
+  return new Date(Number(ms)).toLocaleString();
+}
+
+function resetDatasetDetails() {
+  state.datasets.selectedEntry = null;
+  state.datasets.selectedPath = "";
+  state.datasets.details = null;
+  state.datasets.detailsLoading = false;
+  state.datasets.detailsError = "";
+}
+
+function openDatasetBrowserModal() {
+  if (!state.datasets.browserEnabled) {
+    return;
+  }
+  state.datasets.modalOpen = true;
+  elements.datasetBrowserModal.classList.remove("hidden");
+  elements.datasetBrowserModal.setAttribute("aria-hidden", "false");
+  elements.datasetSearchInput.value = "";
+  state.datasets.filter = "";
+  renderDatasetBrowser();
+  window.setTimeout(() => elements.datasetSearchInput?.focus(), 0);
+}
+
+function closeDatasetBrowserModal() {
+  state.datasets.modalOpen = false;
+  elements.datasetBrowserModal.classList.add("hidden");
+  elements.datasetBrowserModal.setAttribute("aria-hidden", "true");
+  elements.datasetSearchInput.value = "";
+  state.datasets.filter = "";
+  resetDatasetDetails();
+  renderDatasetBrowser();
+}
+
+function openDatasetLoadingModal(datasetName) {
+  state.datasets.loadingModalOpen = true;
+  state.datasets.loadingStatus = "Opening FITS";
+  state.datasets.loadingSteps = [
+    { key: "opening-fits", label: "Opening FITS", state: "active" },
+    { key: "reading-hdu", label: "Reading HDU", state: "pending" },
+    { key: "sanitizing-data", label: "Sanitizing data", state: "pending" },
+    { key: "building-vtk", label: "Building vtkImageData", state: "pending" },
+    { key: "initializing-renderer", label: "Initializing renderer", state: "pending" },
+    { key: "warming-up", label: "Warming up first frame", state: "pending" },
+    { key: "complete", label: "Dataset ready", state: "pending" },
+  ];
+  elements.datasetLoadingFile.textContent = datasetName || "-";
+  elements.datasetLoadingModal.classList.remove("hidden");
+  elements.datasetLoadingModal.setAttribute("aria-hidden", "false");
+  renderDatasetLoading();
+}
+
+function closeDatasetLoadingModal() {
+  state.datasets.loadingModalOpen = false;
+  elements.datasetLoadingModal.classList.add("hidden");
+  elements.datasetLoadingModal.setAttribute("aria-hidden", "true");
+}
+
+function updateDatasetLoadingPhase(phase, label, importMetrics) {
+  const phaseToStepKeys = {
+    "opening-fits": ["opening-fits"],
+    "initializing-renderer": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "initializing-renderer"],
+    "warming-up": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "initializing-renderer", "warming-up"],
+    "complete": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "initializing-renderer", "warming-up", "complete"],
+  };
+  const doneKeys = phaseToStepKeys[phase] || [];
+  state.datasets.loadingStatus = label || state.datasets.loadingStatus || "Loading dataset";
+  state.datasets.loadingSteps = state.datasets.loadingSteps.map((step) => {
+    if (phase === "complete") {
+      return { ...step, state: "done" };
+    }
+    if (doneKeys.includes(step.key)) {
+      return { ...step, state: step.key === phase ? "active" : "done" };
+    }
+    return { ...step, state: "pending" };
+  });
+  if (importMetrics && typeof importMetrics === "object") {
+    const timedKeys = {
+      "opening-fits": importMetrics.fitsOpenMs,
+      "reading-hdu": importMetrics.hduSelectMs,
+      "sanitizing-data": importMetrics.sanitizeConvertMs,
+      "building-vtk": importMetrics.vtkBuildMs,
+    };
+    state.datasets.loadingSteps = state.datasets.loadingSteps.map((step) => (
+      Number.isFinite(timedKeys[step.key])
+        ? { ...step, detail: formatMs(timedKeys[step.key]) }
+        : step
+    ));
+  }
+  renderDatasetLoading();
+}
+
+function renderDatasetLoading() {
+  if (!state.datasets.loadingModalOpen) {
+    return;
+  }
+  elements.datasetLoadingStatus.textContent = state.datasets.loadingStatus || "Loading dataset";
+  elements.datasetLoadingSteps.replaceChildren();
+  for (const step of state.datasets.loadingSteps) {
+    const row = document.createElement("div");
+    row.className = "dataset-loading-step";
+    row.dataset.state = step.state || "pending";
+    const indicator = document.createElement("span");
+    indicator.className = "dataset-loading-step-indicator";
+    const text = document.createElement("span");
+    text.textContent = step.detail ? `${step.label} · ${step.detail}` : step.label;
+    row.append(indicator, text);
+    elements.datasetLoadingSteps.appendChild(row);
+  }
+}
+
+function filteredDatasetEntries() {
+  const filter = (state.datasets.filter || "").trim().toLowerCase();
+  if (!filter) {
+    return state.datasets.entries;
+  }
+  return state.datasets.entries.filter((entry) => String(entry.name || entry.path || "").toLowerCase().includes(filter));
+}
+
+function renderDatasetBreadcrumb() {
+  elements.datasetBreadcrumb.replaceChildren();
+  const parts = state.datasets.currentPath ? state.datasets.currentPath.split("/") : [];
+  const makeButton = (label, path) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "dataset-breadcrumb-button";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      fetchDatasetBrowser(path, { force: true });
+    });
+    elements.datasetBreadcrumb.appendChild(button);
+  };
+  makeButton("Root", "");
+  let prefix = "";
+  for (const part of parts) {
+    const sep = document.createElement("span");
+    sep.className = "dataset-breadcrumb-sep";
+    sep.textContent = "/";
+    elements.datasetBreadcrumb.appendChild(sep);
+    prefix = prefix ? `${prefix}/${part}` : part;
+    makeButton(part, prefix);
+  }
+}
+
+function renderDatasetDetails() {
+  const details = state.datasets.details;
+  const showDetails = Boolean(details);
+  elements.datasetDetailsEmpty.classList.toggle("hidden", showDetails);
+  elements.datasetDetailsPanel.classList.toggle("hidden", !showDetails);
+  elements.datasetOpenSelectedButton.disabled = !state.datasets.selectedPath || state.datasets.detailsLoading || !showDetails || details?.supported === false;
+  if (!showDetails) {
+    if (state.datasets.detailsError) {
+      elements.datasetDetailsEmpty.textContent = state.datasets.detailsError;
+    } else if (state.datasets.detailsLoading) {
+      elements.datasetDetailsEmpty.textContent = "Loading file details...";
+    } else {
+      elements.datasetDetailsEmpty.textContent = "Select a FITS file to inspect its details.";
+    }
+    return;
+  }
+  elements.datasetDetailsName.textContent = details.name || "-";
+  elements.datasetDetailsPath.textContent = details.path || "-";
+  elements.datasetDetailsSize.textContent = formatBytes(details.sizeBytes);
+  elements.datasetDetailsModified.textContent = formatTimestamp(details.modifiedMs);
+  elements.datasetDetailsSupported.textContent = details.supported ? "yes" : "no";
+  elements.datasetDetailsHduCount.textContent = formatInteger(details.fits?.hduCount);
+  elements.datasetDetailsHdus.replaceChildren();
+  for (const hdu of details.fits?.hdus || []) {
+    const item = document.createElement("div");
+    item.className = "dataset-details-item";
+    const title = document.createElement("div");
+    title.className = "dataset-details-item-title";
+    title.textContent = `${formatInteger(hdu.index)} ${hdu.name ? `· ${hdu.name}` : ""}`.trim();
+    const meta = document.createElement("div");
+    meta.className = "dataset-details-item-meta";
+    const bits = [hdu.className, Array.isArray(hdu.shape) ? hdu.shape.join("×") : null, hdu.dtype || null].filter(Boolean);
+    meta.textContent = bits.join(" · ");
+    item.append(title, meta);
+    elements.datasetDetailsHdus.appendChild(item);
+  }
+  elements.datasetDetailsHeader.replaceChildren();
+  for (const [key, value] of Object.entries(details.fits?.headerPreview || {})) {
+    const item = document.createElement("div");
+    item.className = "dataset-details-item";
+    const title = document.createElement("div");
+    title.className = "dataset-details-item-title";
+    title.textContent = key;
+    const meta = document.createElement("div");
+    meta.className = "dataset-details-item-meta";
+    meta.textContent = String(value);
+    item.append(title, meta);
+    elements.datasetDetailsHeader.appendChild(item);
+  }
+}
+
 function renderDatasetBrowser() {
   if (!elements.datasetBrowserSection) {
     return;
   }
-  elements.datasetBrowserSection.classList.toggle("hidden", !state.datasets.browserEnabled);
-  if (!state.datasets.browserEnabled) {
+  elements.datasetBrowserSection.classList.toggle("hidden", false);
+  elements.datasetOpenButton.disabled = !state.datasets.browserEnabled;
+  elements.datasetActiveFile.textContent = state.datasets.activeDatasetName || basenameFromPath(state.datasets.activeDatasetPath) || "-";
+  elements.datasetCurrentPath.textContent = state.datasets.browserEnabled
+    ? (state.datasets.activeDatasetPath ? `/${state.datasets.activeDatasetPath}` : "No dataset selected")
+    : "Browser unavailable.";
+  elements.datasetBrowserStatus.textContent = !state.datasets.browserEnabled
+    ? "Configure VISIVO_DATASET_ROOT to enable the dataset browser."
+    : (state.datasets.error || "Open the dataset browser to browse and inspect FITS files.");
+  elements.datasetBrowserStatus.dataset.tone = state.datasets.error ? "danger" : "subtle";
+
+  if (!state.datasets.modalOpen) {
     return;
   }
-  elements.datasetCurrentPath.textContent = state.datasets.currentPath ? `/${state.datasets.currentPath}` : "/";
-  elements.datasetActiveFile.textContent = state.datasets.activeDatasetName || state.datasets.activeDatasetPath || "-";
-  elements.datasetBrowserStatus.textContent = state.datasets.error
-    || (state.datasets.loading ? "Loading datasets..." : "Choose a FITS dataset under the configured root.");
-  elements.datasetBrowserStatus.dataset.tone = state.datasets.error ? "danger" : state.datasets.loading ? "subtle" : "ok";
+
   elements.datasetRefreshButton.disabled = state.datasets.loading;
+  renderDatasetBreadcrumb();
+  elements.datasetBrowserStatus.textContent = state.datasets.error
+    || (state.datasets.loading ? "Loading datasets..." : "Browse folders and select a FITS file to inspect.");
+  elements.datasetBrowserStatus.dataset.tone = state.datasets.error ? "danger" : state.datasets.loading ? "subtle" : "ok";
   elements.datasetBrowserList.replaceChildren();
 
-  const addEntryButton = (label, className, onClick, extraText = "") => {
+  const addEntryButton = (entry, extraText = "") => {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `dataset-entry ${className}`.trim();
-    button.addEventListener("click", onClick);
+    const isActive = entry.type === "file" && entry.path === state.datasets.activeDatasetPath;
+    const isSelected = entry.type === "file" && entry.path === state.datasets.selectedPath;
+    button.className = `dataset-entry ${entry.type === "directory" ? "dataset-entry-directory" : "dataset-entry-file"}${isActive ? " dataset-entry-active" : ""}${isSelected ? " toggle active" : ""}`;
+    button.addEventListener("click", () => {
+      if (entry.type === "directory") {
+        fetchDatasetBrowser(entry.path, { force: true });
+        return;
+      }
+      selectDatasetEntry(entry);
+    });
+    if (entry.type === "file") {
+      button.addEventListener("dblclick", () => {
+        selectDatasetEntry(entry);
+        confirmDatasetSelection();
+      });
+    }
     const title = document.createElement("span");
     title.className = "dataset-entry-name";
-    title.textContent = label;
-    button.appendChild(title);
-    if (extraText) {
-      const meta = document.createElement("span");
-      meta.className = "dataset-entry-meta";
-      meta.textContent = extraText;
-      button.appendChild(meta);
-    }
+    title.textContent = entry.name || entry.path || "?";
+    const meta = document.createElement("span");
+    meta.className = "dataset-entry-meta";
+    meta.textContent = extraText;
+    button.append(title, meta);
     elements.datasetBrowserList.appendChild(button);
   };
 
   if (state.datasets.parentPath !== null) {
-    addEntryButton("..", "dataset-entry-directory", () => {
-      fetchDatasetBrowser(state.datasets.parentPath, { force: true });
-    }, "Up");
+    addEntryButton({ type: "directory", path: state.datasets.parentPath, name: ".." }, "Up");
   }
 
-  for (const entry of state.datasets.entries) {
-    const label = entry.name || entry.path || "?";
-    const isActive = entry.type === "file" && entry.path === state.datasets.activeDatasetPath;
-    const meta = entry.type === "directory" ? "Folder" : isActive ? "Active dataset" : "FITS";
-    const className = entry.type === "directory"
-      ? "dataset-entry-directory"
-      : isActive
-        ? "dataset-entry-file dataset-entry-active"
-        : "dataset-entry-file";
-    addEntryButton(label, className, () => {
-      if (entry.type === "directory") {
-        fetchDatasetBrowser(entry.path, { force: true });
-      } else {
-        selectDataset(entry.path);
-      }
-    }, meta);
+  const entries = filteredDatasetEntries();
+  for (const entry of entries) {
+    const meta = entry.type === "directory"
+      ? "Folder"
+      : entry.path === state.datasets.activeDatasetPath
+        ? "Active dataset"
+        : formatBytes(entry.sizeBytes);
+    addEntryButton(entry, meta);
   }
 
   if (elements.datasetBrowserList.childElementCount === 0) {
     const empty = document.createElement("div");
     empty.className = "dataset-browser-empty";
-    empty.textContent = state.datasets.loading ? "Loading..." : "No datasets found in this folder.";
+    empty.textContent = state.datasets.loading ? "Loading..." : "No matching datasets in this folder.";
     elements.datasetBrowserList.appendChild(empty);
   }
+
+  renderDatasetDetails();
 }
 
 async function fetchDatasetBrowser(relativePath = "", { force = false } = {}) {
@@ -535,18 +808,54 @@ async function fetchDatasetBrowser(relativePath = "", { force = false } = {}) {
   }
 }
 
-function selectDataset(relativePath) {
+async function fetchDatasetDetails(relativePath) {
+  if (!relativePath) {
+    return;
+  }
+  state.datasets.detailsLoading = true;
+  state.datasets.detailsError = "";
+  state.datasets.details = null;
+  renderDatasetBrowser();
+  try {
+    const response = await fetch(datasetDetailsApiUrl(relativePath), { method: "GET", cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.message || "Could not load file details");
+    }
+    state.datasets.details = payload;
+  } catch (error) {
+    state.datasets.detailsError = error?.message || "Could not load file details";
+  } finally {
+    state.datasets.detailsLoading = false;
+    renderDatasetBrowser();
+  }
+}
+
+function selectDatasetEntry(entry) {
+  if (!entry || entry.type !== "file") {
+    return;
+  }
+  state.datasets.selectedEntry = entry;
+  state.datasets.selectedPath = entry.path;
+  fetchDatasetDetails(entry.path);
+}
+
+function confirmDatasetSelection() {
+  const relativePath = state.datasets.selectedPath;
   if (typeof relativePath !== "string" || !relativePath.trim()) {
     return;
   }
   state.datasets.activeDatasetPath = relativePath.trim();
   state.datasets.activeDatasetName = basenameFromPath(state.datasets.activeDatasetPath);
-  renderDatasetBrowser();
+  closeDatasetBrowserModal();
+  openDatasetLoadingModal(state.datasets.activeDatasetName);
   if (!send({ type: "dataset.select", sessionId: state.sessionId, path: state.datasets.activeDatasetPath })) {
+    closeDatasetLoadingModal();
     logEvent(`Dataset selected for next connect: ${state.datasets.activeDatasetName}`);
   } else {
     logEvent(`Dataset requested: ${state.datasets.activeDatasetName}`);
   }
+  renderDatasetBrowser();
 }
 
 function syncRuntimeDefaultsToUI() {
@@ -621,12 +930,37 @@ elements.disconnectButton.addEventListener("click", () => {
   disconnect(false);
 });
 
+elements.datasetOpenButton?.addEventListener("click", () => {
+  openDatasetBrowserModal();
+});
+
+elements.datasetBrowserCloseButton?.addEventListener("click", () => {
+  closeDatasetBrowserModal();
+});
+
+elements.datasetCancelButton?.addEventListener("click", () => {
+  closeDatasetBrowserModal();
+});
+
+elements.datasetBrowserModalBackdrop?.addEventListener("click", () => {
+  closeDatasetBrowserModal();
+});
+
+elements.datasetOpenSelectedButton?.addEventListener("click", () => {
+  confirmDatasetSelection();
+});
+
 elements.authToken?.addEventListener("change", () => {
   fetchDatasetBrowser(state.datasets.currentPath, { force: true });
 });
 
 elements.datasetRefreshButton?.addEventListener("click", () => {
   fetchDatasetBrowser(state.datasets.currentPath, { force: true });
+});
+
+elements.datasetSearchInput?.addEventListener("input", () => {
+  state.datasets.filter = (elements.datasetSearchInput.value || "").trim().toLowerCase();
+  renderDatasetBrowser();
 });
 
 elements.fullscreenButton.addEventListener("click", async () => {
@@ -779,6 +1113,10 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.volume.paletteMenuOpen) {
     closePaletteMenu({ restoreFocus: true });
+    return;
+  }
+  if (event.key === "Escape" && state.datasets.modalOpen) {
+    closeDatasetBrowserModal();
   }
 });
 
@@ -1099,6 +1437,18 @@ function handleSocketMessage(raw) {
     case "stream-ready":
       logEvent("VisIVO Connect stream ready");
       break;
+    case "dataset.loading":
+      if (message.datasetName) {
+        elements.datasetLoadingFile.textContent = message.datasetName;
+      }
+      updateDatasetLoadingPhase(message.phase, message.label, message.importMetrics);
+      if (message.done) {
+        window.setTimeout(() => {
+          closeDatasetLoadingModal();
+          fetchDatasetBrowser(state.datasets.currentPath, { force: true });
+        }, 250);
+      }
+      break;
     case "ws-stream.started":
       state.transport.wsFallbackActive = true;
       logEvent(`WS fallback started (${Math.round(Number(message.fps) || 0)} fps)`);
@@ -1112,6 +1462,9 @@ function handleSocketMessage(raw) {
       break;
     case "error":
       setConnectionState("error", "danger", message.message || "Server error");
+      if (message.phase === "dataset-switch") {
+        closeDatasetLoadingModal();
+      }
       logEvent(
         `Server error${message.code ? ` [${message.code}]` : ""}${message.phase ? ` phase=${message.phase}` : ""}${message.retryable ? " retryable" : ""}`
       );

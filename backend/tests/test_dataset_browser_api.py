@@ -99,6 +99,32 @@ async def test_api_datasets_rejects_path_traversal(monkeypatch: Any, tmp_path: P
     assert ".." in payload["message"]
 
 
+@pytest.mark.anyio
+async def test_api_dataset_details_returns_fits_summary_on_demand(monkeypatch: Any, tmp_path: Path) -> None:
+    root = tmp_path / "datasets"
+    root.mkdir()
+    fits_path = root / "cube.fits"
+    from astropy.io import fits
+    import numpy as np
+
+    cube = np.arange(24, dtype=np.float32).reshape((4, 3, 2))
+    fits.HDUList([fits.PrimaryHDU(data=cube)]).writeto(fits_path, overwrite=True)
+
+    app_main = _load_app_module(
+        monkeypatch,
+        VISIVO_DATASET_ROOT=str(root),
+        VISIVO_STRICT_DATASET_PATH="1",
+    )
+
+    response = await app_main.api_dataset_details(_request("/api/datasets/details", "path=cube.fits"))
+    assert response.status_code == 200
+    payload = _json_payload(response)
+    assert payload["name"] == "cube.fits"
+    assert payload["supported"] is True
+    assert payload["fits"]["hduCount"] >= 1
+    assert payload["fits"]["hdus"][0]["shape"] == [4, 3, 2]
+
+
 def test_resolve_requested_dataset_path_supports_relative_paths_and_default_fallback(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
