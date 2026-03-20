@@ -20,8 +20,8 @@ class AppConfig:
 DEFAULT_ICE_SERVERS = [{"urls": ["stun:stun.l.google.com:19302"]}]
 
 
-def _parse_ice_servers(raw: str | None) -> list[dict[str, Any]]:
-    if not raw:
+def _parse_ice_servers(raw: str | None, *, allow_empty: bool = False) -> list[dict[str, Any]]:
+    if raw is None or not raw.strip():
         return DEFAULT_ICE_SERVERS
     try:
         parsed = json.loads(raw)
@@ -30,6 +30,8 @@ def _parse_ice_servers(raw: str | None) -> list[dict[str, Any]]:
 
     if not isinstance(parsed, list):
         return DEFAULT_ICE_SERVERS
+    if not parsed:
+        return [] if allow_empty else DEFAULT_ICE_SERVERS
 
     servers: list[dict[str, Any]] = []
     for entry in parsed:
@@ -47,14 +49,22 @@ def _parse_ice_servers(raw: str | None) -> list[dict[str, Any]]:
             server["credential"] = entry["credential"]
         servers.append(server)
 
-    return servers or DEFAULT_ICE_SERVERS
+    if servers:
+        return servers
+    return [] if allow_empty else DEFAULT_ICE_SERVERS
 
 
 def load_config() -> AppConfig:
-    backend_ice_servers = _parse_ice_servers(os.getenv("VISIVO_ICE_SERVERS"))
+    backend_ice_servers_raw = os.getenv("VISIVO_ICE_SERVERS")
+    backend_ice_servers = _parse_ice_servers(
+        backend_ice_servers_raw,
+        allow_empty=backend_ice_servers_raw is not None,
+    )
     client_ice_servers_raw = os.getenv("VISIVO_CLIENT_ICE_SERVERS")
     client_ice_servers = (
-        _parse_ice_servers(client_ice_servers_raw) if client_ice_servers_raw is not None else backend_ice_servers
+        _parse_ice_servers(client_ice_servers_raw, allow_empty=True)
+        if client_ice_servers_raw is not None
+        else backend_ice_servers
     )
     return AppConfig(
         dataset_path=os.getenv("VISIVO_DATACUBE_PATH"),

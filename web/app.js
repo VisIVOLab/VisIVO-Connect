@@ -627,8 +627,7 @@ function maybeCreatePeerConnection() {
     return state.pc;
   }
 
-  const defaultIceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
-  const iceServers = Array.isArray(state.iceServers) && state.iceServers.length > 0 ? state.iceServers : defaultIceServers;
+  const iceServers = Array.isArray(state.iceServers) ? state.iceServers : [];
   const pc = new RTCPeerConnection({
     iceServers,
   });
@@ -813,7 +812,7 @@ function cleanupPeerConnection() {
 }
 
 function updateIceServersFromSignal(iceServers) {
-  if (!Array.isArray(iceServers) || iceServers.length === 0) {
+  if (!Array.isArray(iceServers)) {
     return;
   }
   state.iceServers = iceServers

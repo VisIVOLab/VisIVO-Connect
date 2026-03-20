@@ -14,3 +14,11 @@ def test_parse_ice_servers_accepts_turn_stun_entries() -> None:
     assert parsed[0]["urls"][0].startswith("stun:")
     assert parsed[1]["urls"][0].startswith("turn:")
     assert parsed[1]["username"] == "u"
+
+
+def test_parse_ice_servers_allows_explicit_empty_list_when_enabled() -> None:
+    assert _parse_ice_servers("[]", allow_empty=True) == []
+
+
+def test_parse_ice_servers_empty_list_falls_back_by_default() -> None:
+    assert _parse_ice_servers("[]") == DEFAULT_ICE_SERVERS
