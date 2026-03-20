@@ -41,6 +41,64 @@ cleanup_task = None
 log = logging.getLogger("uvicorn.error")
 
 
+def _stat_value(stat: Any, key: str, default: Any = None) -> Any:
+    if isinstance(stat, dict):
+        return stat.get(key, default)
+    return getattr(stat, key, default)
+
+
+def _iter_stats(report: Any) -> list[Any]:
+    values = getattr(report, "values", None)
+    if callable(values):
+        try:
+            return list(values())
+        except Exception:
+            return []
+    if isinstance(report, dict):
+        return list(report.values())
+    return []
+
+
+def _get_stat(report: Any, stat_id: str | None) -> Any | None:
+    if not stat_id:
+        return None
+    getter = getattr(report, "get", None)
+    if callable(getter):
+        try:
+            return getter(stat_id)
+        except Exception:
+            return None
+    if isinstance(report, dict):
+        return report.get(stat_id)
+    return None
+
+
+def _selected_candidate_pair(report: Any) -> tuple[Any | None, Any | None, Any | None]:
+    selected_pair_id: str | None = None
+    for stat in _iter_stats(report):
+        if _stat_value(stat, "type") == "transport":
+            selected_pair_id = _stat_value(stat, "selectedCandidatePairId")
+            if selected_pair_id:
+                break
+
+    pair = _get_stat(report, selected_pair_id) if selected_pair_id else None
+    if pair is None:
+        for stat in _iter_stats(report):
+            if _stat_value(stat, "type") == "candidate-pair" and (
+                _stat_value(stat, "selected")
+                or _stat_value(stat, "nominated")
+                or _stat_value(stat, "state") == "succeeded"
+            ):
+                pair = stat
+                break
+    if pair is None:
+        return None, None, None
+
+    local = _get_stat(report, _stat_value(pair, "localCandidateId"))
+    remote = _get_stat(report, _stat_value(pair, "remoteCandidateId"))
+    return pair, local, remote
+
+
 class _JpegEncoder:
     def encode(self, frame_bgr: Any) -> bytes:
         frame = np.ascontiguousarray(frame_bgr)
@@ -125,17 +183,85 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
 
     pc = RTCPeerConnection(_pc_config_from_env())
     session.peer_connection = pc
+    stats_task: asyncio.Task[None] | None = None
+    last_pair_summary = ""
+    last_rtp_summary = ""
 
     video_track = LatestFrameVideoTrack(session)
     pc.addTrack(video_track)
 
+    async def _stats_loop() -> None:
+        nonlocal last_pair_summary, last_rtp_summary
+        while True:
+            await asyncio.sleep(2.0)
+            try:
+                report = await pc.getStats()
+            except Exception:
+                continue
+
+            pair, local, remote = _selected_candidate_pair(report)
+            if pair is not None:
+                local_type = _stat_value(local, "candidateType", "unknown")
+                remote_type = _stat_value(remote, "candidateType", "unknown")
+                protocol = _stat_value(local, "protocol", _stat_value(pair, "protocol", "unknown"))
+                local_addr = _stat_value(local, "address", _stat_value(local, "ip", "?"))
+                local_port = _stat_value(local, "port", "?")
+                remote_addr = _stat_value(remote, "address", _stat_value(remote, "ip", "?"))
+                remote_port = _stat_value(remote, "port", "?")
+                relay_selected = local_type == "relay" or remote_type == "relay"
+                pair_summary = (
+                    f"ICE pair selected session={session.session_id} "
+                    f"local={local_type}@{local_addr}:{local_port} "
+                    f"remote={remote_type}@{remote_addr}:{remote_port} "
+                    f"protocol={protocol} state={_stat_value(pair, 'state', '?')} "
+                    f"relay={relay_selected}"
+                )
+                if pair_summary != last_pair_summary:
+                    last_pair_summary = pair_summary
+                    log.warning(pair_summary)
+
+            outbound_video = None
+            remote_inbound_video = None
+            for stat in _iter_stats(report):
+                stat_type = _stat_value(stat, "type")
+                if outbound_video is None and stat_type == "outbound-rtp" and _stat_value(stat, "kind") == "video":
+                    outbound_video = stat
+                if remote_inbound_video is None and stat_type == "remote-inbound-rtp" and _stat_value(stat, "kind") == "video":
+                    remote_inbound_video = stat
+
+            if outbound_video is not None:
+                rtp_summary = (
+                    f"RTP out video session={session.session_id} "
+                    f"bytesSent={int(_stat_value(outbound_video, 'bytesSent', 0) or 0)} "
+                    f"packetsSent={int(_stat_value(outbound_video, 'packetsSent', 0) or 0)} "
+                    f"framesSent={int(_stat_value(outbound_video, 'framesSent', 0) or 0)}"
+                )
+                if remote_inbound_video is not None:
+                    rtp_summary += (
+                        f" remoteLost={int(_stat_value(remote_inbound_video, 'packetsLost', 0) or 0)} "
+                        f"rtt={float(_stat_value(remote_inbound_video, 'roundTripTime', 0.0) or 0.0):.4f}"
+                    )
+                if rtp_summary != last_rtp_summary:
+                    last_rtp_summary = rtp_summary
+                    log.warning(rtp_summary)
+
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
+        nonlocal stats_task
         log.warning("PeerConnection state=%s session=%s", pc.connectionState, session.session_id)
+        if pc.connectionState in {"connecting", "connected"} and stats_task is None:
+            stats_task = asyncio.create_task(_stats_loop())
+        if pc.connectionState in {"failed", "closed"} and stats_task is not None:
+            stats_task.cancel()
+            stats_task = None
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange() -> None:
+        nonlocal stats_task
         log.warning("ICE state=%s session=%s", pc.iceConnectionState, session.session_id)
+        if pc.iceConnectionState in {"failed", "closed", "disconnected"} and stats_task is not None:
+            stats_task.cancel()
+            stats_task = None
 
     @pc.on("icecandidate")
     async def on_icecandidate(candidate: RTCIceCandidate | None) -> None:

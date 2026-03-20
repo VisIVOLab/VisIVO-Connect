@@ -186,6 +186,10 @@ const state = {
     forceRelayOnly: false,
     statsTimer: 0,
     lastPairSummary: "",
+    lastInboundBytes: 0,
+    lastInboundFrames: 0,
+    lastInboundTimestampMs: 0,
+    lastInboundSummary: "",
   },
   transport: {
     forceWsFallback: false,
@@ -201,7 +205,7 @@ const DEFAULT_WS_URL = "/ws";
 {
   const query = new URLSearchParams(window.location.search);
   const initialWsUrl = pickInitialWsUrl();
-  state.rtc.forceRelayOnly = isTruthyQueryParam(query.get("relayOnly"));
+  state.rtc.forceRelayOnly = isTruthyQueryParam(query.get("relayOnly")) || isTruthyQueryParam(query.get("forceRelay"));
   state.transport.forceWsFallback = isTruthyQueryParam(query.get("wsFallback"));
   const fallbackTimeoutMs = Number(query.get("fallbackTimeoutMs"));
   if (Number.isFinite(fallbackTimeoutMs) && fallbackTimeoutMs >= 1000) {
@@ -238,10 +242,30 @@ syncTouchTuningUI();
 syncMouseTuningUI();
 installControlPanelUI();
 elements.remoteVideo?.addEventListener("loadedmetadata", () => {
+  logEvent(
+    `Video loadedmetadata ${elements.remoteVideo.videoWidth}x${elements.remoteVideo.videoHeight} readyState=${elements.remoteVideo.readyState}`
+  );
   const maybePlay = elements.remoteVideo.play?.();
   if (maybePlay && typeof maybePlay.catch === "function") {
-    maybePlay.catch(() => {});
+    maybePlay.catch((error) => {
+      logEvent(`Video play() rejected: ${error?.name || "Error"}`);
+    });
   }
+});
+elements.remoteVideo?.addEventListener("playing", () => {
+  logEvent(
+    `Video playing readyState=${elements.remoteVideo.readyState} currentTime=${elements.remoteVideo.currentTime.toFixed(2)}`
+  );
+});
+elements.remoteVideo?.addEventListener("waiting", () => {
+  logEvent(`Video waiting readyState=${elements.remoteVideo.readyState}`);
+});
+elements.remoteVideo?.addEventListener("stalled", () => {
+  logEvent(`Video stalled readyState=${elements.remoteVideo.readyState}`);
+});
+elements.remoteVideo?.addEventListener("error", () => {
+  const err = elements.remoteVideo.error;
+  logEvent(`Video error code=${err?.code || "unknown"}`);
 });
 
 elements.connectButton.addEventListener("click", () => {
@@ -773,13 +797,17 @@ function maybeCreatePeerConnection() {
   startRtcStatsPolling(pc);
 
   pc.addEventListener("track", (event) => {
+    logEvent(`ontrack kind=${event.track?.kind || "unknown"} streams=${event.streams?.length || 0}`);
     const [stream] = event.streams;
     if (stream) {
       state.remoteStream = stream;
       elements.remoteVideo.srcObject = stream;
+      logEvent(`video.srcObject set tracks=${stream.getTracks().length}`);
       const maybePlay = elements.remoteVideo.play?.();
       if (maybePlay && typeof maybePlay.catch === "function") {
-        maybePlay.catch(() => {});
+        maybePlay.catch((error) => {
+          logEvent(`Video play() rejected: ${error?.name || "Error"}`);
+        });
       }
       state.videoTrackFound = true;
       stopWsFallback("", false);
@@ -954,6 +982,10 @@ function cleanupPeerConnection() {
   clearInterval(state.rtc.statsTimer);
   state.rtc.statsTimer = 0;
   state.rtc.lastPairSummary = "";
+  state.rtc.lastInboundBytes = 0;
+  state.rtc.lastInboundFrames = 0;
+  state.rtc.lastInboundTimestampMs = 0;
+  state.rtc.lastInboundSummary = "";
   state.pendingRemoteIceCandidates = [];
   state.rtc.offerReceivedAtMs = 0;
   state.rtc.connectedAtMs = 0;
@@ -975,6 +1007,7 @@ function startRtcStatsPolling(pc) {
       return;
     }
     logSelectedCandidatePair(state.pc);
+    logInboundVideoStats(state.pc);
   }, 2000);
 }
 
@@ -993,7 +1026,13 @@ async function logSelectedCandidatePair(pc) {
     const localType = local?.candidateType || "unknown";
     const remoteType = remote?.candidateType || "unknown";
     const protocol = local?.protocol || pair.protocol || "unknown";
-    const summary = `RTC pair ${localType}/${remoteType} ${protocol}`;
+    const localAddr = local?.address || local?.ip || "?";
+    const localPort = local?.port || "?";
+    const remoteAddr = remote?.address || remote?.ip || "?";
+    const remotePort = remote?.port || "?";
+    const pairState = pair?.state || "?";
+    const relaySelected = localType === "relay" || remoteType === "relay";
+    const summary = `RTC pair ${localType}/${remoteType} ${protocol} ${localAddr}:${localPort}->${remoteAddr}:${remotePort} state=${pairState} relay=${relaySelected ? "yes" : "no"}`;
     if (summary !== state.rtc.lastPairSummary) {
       state.rtc.lastPairSummary = summary;
       logEvent(summary);
@@ -1020,6 +1059,51 @@ function findSelectedCandidatePair(stats) {
     }
   }
   return null;
+}
+
+async function logInboundVideoStats(pc) {
+  if (!pc || typeof pc.getStats !== "function") {
+    return;
+  }
+  try {
+    const stats = await pc.getStats();
+    let inbound = null;
+    for (const stat of stats.values()) {
+      if (stat.type === "inbound-rtp" && stat.kind === "video") {
+        inbound = stat;
+        break;
+      }
+    }
+    if (!inbound) {
+      return;
+    }
+
+    const bytes = Number(inbound.bytesReceived || 0);
+    const frames = Number(inbound.framesDecoded || inbound.framesReceived || 0);
+    const ts = Number(inbound.timestamp || performance.now());
+    const dtMs = state.rtc.lastInboundTimestampMs > 0 ? ts - state.rtc.lastInboundTimestampMs : 0;
+    const dBytes = state.rtc.lastInboundTimestampMs > 0 ? Math.max(0, bytes - state.rtc.lastInboundBytes) : 0;
+    const dFrames = state.rtc.lastInboundTimestampMs > 0 ? Math.max(0, frames - state.rtc.lastInboundFrames) : 0;
+
+    state.rtc.lastInboundTimestampMs = ts;
+    state.rtc.lastInboundBytes = bytes;
+    state.rtc.lastInboundFrames = frames;
+
+    if (dtMs <= 0) {
+      return;
+    }
+    const kbps = (dBytes * 8) / dtMs;
+    const fps = (dFrames * 1000) / dtMs;
+    const packetsLost = Number(inbound.packetsLost || 0);
+    const jitter = Number(inbound.jitter || 0);
+    const summary = `RTP in video ${kbps.toFixed(1)} kbps ${fps.toFixed(1)} fps lost=${packetsLost} jitter=${jitter.toFixed(4)}`;
+    if (summary !== state.rtc.lastInboundSummary) {
+      state.rtc.lastInboundSummary = summary;
+      logEvent(summary);
+    }
+  } catch {
+    // ignore stats failures
+  }
 }
 
 function updateIceServersFromSignal(iceServers) {
