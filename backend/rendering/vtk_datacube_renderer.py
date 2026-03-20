@@ -1143,7 +1143,7 @@ class VTKDatacubeRenderer:
         self.render_window.SetSize(self.window_width, self.window_height)
 
     def set_user_render_scale(self, render_scale: float) -> None:
-        self.user_render_scale = min(max(float(render_scale), 0.4), 1.5)
+        self.user_render_scale = min(max(float(render_scale), 0.4), 2.0)
 
     def set_interactive_boost(self, boost: float) -> None:
         self.interactive_boost = min(max(float(boost), 1.0), 3.5)

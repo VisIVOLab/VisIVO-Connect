@@ -126,13 +126,13 @@
                   </label>
 
                   <label class="field">
-                    <span>Render scale</span>
+                    <span>Base render scale</span>
                     <input id="renderScale" type="range" min="0.5" max="2.0" step="0.05" value="1" />
                     <output id="renderScaleValue">1.00x</output>
                   </label>
 
                   <label class="field">
-                    <span>Target bitrate</span>
+                    <span>Base bitrate</span>
                     <input id="bitrate" type="range" min="1" max="40" step="1" value="14" />
                     <output id="bitrateValue">14 Mbps</output>
                   </label>
@@ -147,6 +147,21 @@
                     <button class="toggle active" id="interactiveModeButton" type="button">Interactive</button>
                     <button class="toggle" id="hqModeButton" type="button">High quality</button>
                   </div>
+
+                  <label class="field">
+                    <span>Interactive image downsample</span>
+                    <input id="interactiveDownsample" type="range" min="1.0" max="2.5" step="0.1" value="1.6" />
+                    <output id="interactiveDownsampleValue">1.6x</output>
+                  </label>
+
+                  <label class="field">
+                    <span>HQ detail boost</span>
+                    <select id="hqDetailPreset">
+                      <option value="balanced">Balanced</option>
+                      <option value="sharp" selected>Sharp</option>
+                      <option value="ultra">Ultra</option>
+                    </select>
+                  </label>
 
                   <div class="field">
                     <span>Touch tuning (debug)</span>

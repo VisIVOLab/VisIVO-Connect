@@ -50,6 +50,9 @@ const elements = {
   cropZMax: document.getElementById("cropZMax"),
   interactiveModeButton: document.getElementById("interactiveModeButton"),
   hqModeButton: document.getElementById("hqModeButton"),
+  interactiveDownsample: document.getElementById("interactiveDownsample"),
+  interactiveDownsampleValue: document.getElementById("interactiveDownsampleValue"),
+  hqDetailPreset: document.getElementById("hqDetailPreset"),
   eventLog: document.getElementById("eventLog"),
   clearLogButton: document.getElementById("clearLogButton"),
   metricsStatus: document.getElementById("metricsStatus"),
@@ -196,7 +199,9 @@ const state = {
     renderMode: "composite",
     opacityScale: 1.8,
     sampleDistanceScale: null,
+    sampleDistanceManual: false,
     imageSampleDistance: null,
+    imageSampleDistanceManual: false,
     shade: true,
     sliceAxis: "z",
     slicePosition: 0.5,
@@ -204,6 +209,10 @@ const state = {
       enabled: false,
       bounds: [0, 1, 0, 1, 0, 1],
     },
+  },
+  quality: {
+    interactiveDownsample: 1.6,
+    hqDetailPreset: "sharp",
   },
   ui: {
     activeTab: "session",
@@ -299,6 +308,8 @@ elements.sessionId.textContent = state.sessionId;
 elements.renderScaleValue.textContent = formatScale(state.renderParams.scale);
 elements.bitrateValue.textContent = formatBitrate(state.renderParams.bitrate);
 elements.targetFpsValue.textContent = formatFps(state.renderParams.targetFps);
+elements.interactiveDownsampleValue.textContent = `${state.quality.interactiveDownsample.toFixed(1)}x`;
+elements.hqDetailPreset.value = state.quality.hqDetailPreset;
 elements.visualizationMode.value = state.visualization.mode;
 applyIsoRange(state.visualization.isoRangeMin, state.visualization.isoRangeMax);
 elements.isoValue.value = String(state.visualization.isoValue);
@@ -479,12 +490,14 @@ elements.volumeOpacityScale.addEventListener("input", () => {
 
 elements.volumeSampleDistanceScale.addEventListener("input", () => {
   state.volume.sampleDistanceScale = Number(elements.volumeSampleDistanceScale.value);
+  state.volume.sampleDistanceManual = true;
   elements.volumeSampleDistanceScaleValue.textContent = formatFloat(state.volume.sampleDistanceScale);
   sendRenderParams();
 });
 
 elements.volumeImageSampleDistance.addEventListener("input", () => {
   state.volume.imageSampleDistance = Math.max(1.0, Number(elements.volumeImageSampleDistance.value));
+  state.volume.imageSampleDistanceManual = true;
   elements.volumeImageSampleDistanceValue.textContent = formatFloat(state.volume.imageSampleDistance);
   sendRenderParams();
 });
@@ -530,6 +543,17 @@ elements.interactiveModeButton.addEventListener("click", () => {
 
 elements.hqModeButton.addEventListener("click", () => {
   setMode("high-quality", true);
+});
+
+elements.interactiveDownsample.addEventListener("input", () => {
+  state.quality.interactiveDownsample = Number(elements.interactiveDownsample.value);
+  elements.interactiveDownsampleValue.textContent = `${state.quality.interactiveDownsample.toFixed(1)}x`;
+  sendRenderParams();
+});
+
+elements.hqDetailPreset.addEventListener("change", () => {
+  state.quality.hqDetailPreset = elements.hqDetailPreset.value;
+  sendRenderParams();
 });
 
 document.addEventListener("fullscreenchange", () => {
@@ -600,8 +624,8 @@ function openSocket() {
       renderMode: state.renderMode,
       initialRenderParams: {
         mode: state.renderMode,
-        scale: state.renderParams.scale,
-        bitrateMbps: state.renderParams.bitrate,
+        scale: effectiveRenderScaleForMode(state.renderMode),
+        bitrateMbps: effectiveBitrateForMode(state.renderMode),
         targetFps: state.renderParams.targetFps,
         visualizationMode: state.visualization.mode,
         isoValue: state.visualization.isoValue,
@@ -1217,13 +1241,15 @@ function send(payload) {
 }
 
 function sendRenderParams() {
+  const effectiveScale = effectiveRenderScaleForMode(state.renderMode);
+  const effectiveBitrate = effectiveBitrateForMode(state.renderMode);
   send({
     type: "render.params",
     sessionId: state.sessionId,
     params: {
       mode: state.renderMode,
-      scale: state.renderParams.scale,
-      bitrateMbps: state.renderParams.bitrate,
+      scale: effectiveScale,
+      bitrateMbps: effectiveBitrate,
       targetFps: state.renderParams.targetFps,
       visualizationMode: state.visualization.mode,
       isoValue: state.visualization.isoValue,
@@ -1231,7 +1257,7 @@ function sendRenderParams() {
     },
   });
   logEvent(
-    `Render params scale=${state.renderParams.scale.toFixed(2)} bitrate=${state.renderParams.bitrate}Mbps vis=${state.visualization.mode} mode=${state.volume.renderMode} iso=${formatIso(state.visualization.isoValue)}`
+    `Render params scale=${effectiveScale.toFixed(2)} bitrate=${effectiveBitrate.toFixed(0)}Mbps vis=${state.visualization.mode} mode=${state.volume.renderMode} iso=${formatIso(state.visualization.isoValue)} interactiveDownsample=${state.quality.interactiveDownsample.toFixed(1)}x hq=${currentHqDetailPreset().label}`
   );
 }
 
@@ -1247,6 +1273,7 @@ function setMode(mode, notify = true) {
       sessionId: state.sessionId,
       mode,
     });
+    sendRenderParams();
     logEvent(`Mode ${mode}`);
   }
 }
@@ -1959,10 +1986,14 @@ function mergeVolumeParams(incoming) {
     state.volume.opacityScale = Number(incoming.opacityScale);
   }
   if (Number.isFinite(incoming.sampleDistanceScale)) {
-    state.volume.sampleDistanceScale = Number(incoming.sampleDistanceScale);
+    if (state.volume.sampleDistanceManual) {
+      state.volume.sampleDistanceScale = Number(incoming.sampleDistanceScale);
+    }
   }
   if (Number.isFinite(incoming.imageSampleDistance)) {
-    state.volume.imageSampleDistance = Math.max(1.0, Number(incoming.imageSampleDistance));
+    if (state.volume.imageSampleDistanceManual) {
+      state.volume.imageSampleDistance = Math.max(1.0, Number(incoming.imageSampleDistance));
+    }
   }
   if (typeof incoming.shade === "boolean") {
     state.volume.shade = incoming.shade;
@@ -1999,12 +2030,8 @@ function buildVolumeParamsPayload() {
       bounds: state.volume.cropping.bounds,
     },
   };
-  if (Number.isFinite(state.volume.sampleDistanceScale)) {
-    payload.sampleDistanceScale = state.volume.sampleDistanceScale;
-  }
-  if (Number.isFinite(state.volume.imageSampleDistance)) {
-    payload.imageSampleDistance = state.volume.imageSampleDistance;
-  }
+  payload.sampleDistanceScale = effectiveVolumeSampleDistanceScale(state.renderMode);
+  payload.imageSampleDistance = effectiveVolumeImageSampleDistance(state.renderMode);
   return payload;
 }
 
@@ -2018,14 +2045,18 @@ function applyAutoContrastPreset() {
 
   if (state.volume.renderMode === "mip") {
     state.volume.opacityScale = 1.0;
-    state.volume.sampleDistanceScale = state.renderMode === "interactive" ? 1.4 : 1.0;
-    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 1.0;
+    state.volume.sampleDistanceScale = null;
+    state.volume.sampleDistanceManual = false;
+    state.volume.imageSampleDistance = null;
+    state.volume.imageSampleDistanceManual = false;
     state.volume.shade = false;
   } else {
     state.volume.renderMode = "composite";
     state.volume.opacityScale = 2.3;
-    state.volume.sampleDistanceScale = state.renderMode === "interactive" ? 1.15 : 0.8;
-    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 1.0;
+    state.volume.sampleDistanceScale = null;
+    state.volume.sampleDistanceManual = false;
+    state.volume.imageSampleDistance = null;
+    state.volume.imageSampleDistanceManual = false;
     state.volume.shade = true;
   }
 
@@ -2041,30 +2072,81 @@ function clamp01(value) {
   return Math.min(1, Math.max(0, value));
 }
 
-function defaultVolumeSampleDistanceScale() {
-  if (state.volume.renderMode === "mip") {
-    return state.renderMode === "interactive" ? 1.4 : 1.0;
+const HQ_DETAIL_PRESETS = {
+  balanced: {
+    label: "Balanced",
+    renderScaleBoost: 1.0,
+    sampleDistanceScale: 0.95,
+    bitrate: 14,
+  },
+  sharp: {
+    label: "Sharp",
+    renderScaleBoost: 1.2,
+    sampleDistanceScale: 0.8,
+    bitrate: 20,
+  },
+  ultra: {
+    label: "Ultra",
+    renderScaleBoost: 1.4,
+    sampleDistanceScale: 0.7,
+    bitrate: 28,
+  },
+};
+
+function currentHqDetailPreset() {
+  return HQ_DETAIL_PRESETS[state.quality.hqDetailPreset] || HQ_DETAIL_PRESETS.sharp;
+}
+
+function effectiveRenderScaleForMode(mode = state.renderMode) {
+  const base = Number(state.renderParams.scale || 1);
+  if (mode === "interactive") {
+    return clampFloat(base / Math.max(state.quality.interactiveDownsample, 1.0), 0.4, 2.0, 1);
   }
-  return state.renderMode === "interactive" ? 1.15 : 0.8;
+  return clampFloat(base * currentHqDetailPreset().renderScaleBoost, 0.4, 2.0, 1);
 }
 
-function defaultVolumeImageSampleDistance() {
-  if (state.volume.renderMode === "mip") {
-    return state.renderMode === "interactive" ? 1.6 : 1.0;
+function effectiveBitrateForMode(mode = state.renderMode) {
+  const base = Number(state.renderParams.bitrate || 14);
+  if (mode === "interactive") {
+    return clampFloat(base, 1, 40, 14);
   }
-  return state.renderMode === "interactive" ? 1.8 : 1.0;
+  return clampFloat(Math.max(base, currentHqDetailPreset().bitrate), 1, 40, 14);
 }
 
-function effectiveVolumeSampleDistanceScale() {
-  return Number.isFinite(state.volume.sampleDistanceScale)
-    ? Number(state.volume.sampleDistanceScale)
-    : defaultVolumeSampleDistanceScale();
+function defaultVolumeSampleDistanceScale(mode = state.renderMode) {
+  if (state.volume.renderMode === "mip") {
+    return mode === "interactive" ? 1.4 : 1.0;
+  }
+  if (mode === "interactive") {
+    const dragPenalty = Math.max(state.quality.interactiveDownsample - 1.0, 0.0);
+    return clampFloat(1.1 + dragPenalty * 0.8, 1.1, 2.4, 1.4);
+  }
+  return currentHqDetailPreset().sampleDistanceScale;
 }
 
-function effectiveVolumeImageSampleDistance() {
-  return Number.isFinite(state.volume.imageSampleDistance)
-    ? Number(state.volume.imageSampleDistance)
-    : defaultVolumeImageSampleDistance();
+function defaultVolumeImageSampleDistance(mode = state.renderMode) {
+  if (state.volume.renderMode === "mip") {
+    return mode === "interactive" ? 1.6 : 1.0;
+  }
+  if (mode === "interactive") {
+    const dragPenalty = Math.max(state.quality.interactiveDownsample - 1.0, 0.0);
+    return clampFloat(1.35 + dragPenalty * 0.55, 1.0, 2.2, 1.6);
+  }
+  return 1.0;
+}
+
+function effectiveVolumeSampleDistanceScale(mode = state.renderMode) {
+  if (Number.isFinite(state.volume.sampleDistanceScale) && state.volume.sampleDistanceManual) {
+    return Number(state.volume.sampleDistanceScale);
+  }
+  return defaultVolumeSampleDistanceScale(mode);
+}
+
+function effectiveVolumeImageSampleDistance(mode = state.renderMode) {
+  if (Number.isFinite(state.volume.imageSampleDistance) && state.volume.imageSampleDistanceManual) {
+    return Math.max(1.0, Number(state.volume.imageSampleDistance));
+  }
+  return Math.max(1.0, defaultVolumeImageSampleDistance(mode));
 }
 
 function computeDisplayScaleSummary() {
@@ -2280,7 +2362,7 @@ function renderMetrics(payload) {
   setText(elements.metricsRequestedMapperClass, pipeline.requestedMapperClass || renderer.requestedMapperClass || "-");
   setText(elements.metricsSmartMapperRequestedMode, pipeline.smartMapperRequestedMode || renderer.smartMapperRequestedMode || "-");
   setText(elements.metricsSmartMapperLastUsedMode, pipeline.smartMapperLastUsedMode || renderer.smartMapperLastUsedMode || "-");
-  setText(elements.metricsRequestedBitrate, formatBitrate(state.renderParams.bitrate));
+  setText(elements.metricsRequestedBitrate, formatBitrate(effectiveBitrateForMode(state.renderMode)));
   setText(
     elements.metricsStreamFrameSize,
     Number.isFinite(pipeline.frameWidth) && Number.isFinite(pipeline.frameHeight)
