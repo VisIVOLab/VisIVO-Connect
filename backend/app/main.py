@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,61 @@ if WEB_DIR.exists():
 sessions = SessionManager(max_sessions=config.max_sessions, idle_timeout_s=config.idle_timeout_s)
 cleanup_task = None
 log = logging.getLogger("uvicorn.error")
+
+
+def _iter_urls(entry: dict[str, Any]) -> list[str]:
+    urls = entry.get("urls")
+    if isinstance(urls, str):
+        return [urls]
+    if isinstance(urls, list):
+        return [str(url).strip() for url in urls if str(url).strip()]
+    return []
+
+
+def _has_turn(entry: dict[str, Any]) -> bool:
+    return any(url.lower().startswith(("turn:", "turns:")) for url in _iter_urls(entry))
+
+
+def _effective_backend_ice_entries() -> list[dict[str, Any]]:
+    """
+    Build backend ICE config for aiortc.
+    Priority:
+    - VISIVO_ICE_SERVERS entries (explicit backend config)
+    - plus TURN entries from VISIVO_CLIENT_ICE_SERVERS (to avoid browser-only TURN setups)
+    """
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_entry(entry: dict[str, Any]) -> None:
+        urls = _iter_urls(entry)
+        if not urls:
+            return
+        key = json.dumps(
+            {
+                "urls": urls,
+                "username": entry.get("username"),
+                "credential": entry.get("credential"),
+            },
+            sort_keys=True,
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        normalized: dict[str, Any] = {"urls": urls}
+        if isinstance(entry.get("username"), str):
+            normalized["username"] = entry["username"]
+        if isinstance(entry.get("credential"), str):
+            normalized["credential"] = entry["credential"]
+        merged.append(normalized)
+
+    for entry in config.ice_servers:
+        if isinstance(entry, dict):
+            add_entry(entry)
+    for entry in config.client_ice_servers:
+        if isinstance(entry, dict) and _has_turn(entry):
+            add_entry(entry)
+
+    return merged
 
 
 def _stat_value(stat: Any, key: str, default: Any = None) -> Any:
@@ -135,14 +191,30 @@ def _is_authorized(token: str | None, expected: str | None) -> bool:
 
 
 def _pc_config_from_env() -> RTCConfiguration:
+    effective_entries = _effective_backend_ice_entries()
     servers = [
         RTCIceServer(
             urls=entry["urls"],
             username=entry.get("username"),
             credential=entry.get("credential"),
         )
-        for entry in config.ice_servers
+        for entry in effective_entries
     ]
+    backend_turn = any(_has_turn(entry) for entry in config.ice_servers if isinstance(entry, dict))
+    effective_turn = any(_has_turn(entry) for entry in effective_entries)
+    log.warning(
+        "Backend ICE config entries=%s backend_has_turn=%s effective_has_turn=%s",
+        len(effective_entries),
+        backend_turn,
+        effective_turn,
+    )
+    for idx, entry in enumerate(effective_entries, start=1):
+        log.warning(
+            "Backend ICE[%s] urls=%s username=%s",
+            idx,
+            _iter_urls(entry),
+            bool(entry.get("username")),
+        )
     return RTCConfiguration(iceServers=servers)
 
 
@@ -263,15 +335,27 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
             stats_task.cancel()
             stats_task = None
 
+    @pc.on("icegatheringstatechange")
+    async def on_icegatheringstatechange() -> None:
+        log.warning("ICE gathering state=%s session=%s", pc.iceGatheringState, session.session_id)
+
     @pc.on("icecandidate")
     async def on_icecandidate(candidate: RTCIceCandidate | None) -> None:
         if candidate is None:
+            log.warning("Local ICE candidate end-of-candidates session=%s", session.session_id)
             return
+        candidate_str = candidate.candidate or ""
+        candidate_ip = getattr(candidate, "ip", None) or getattr(candidate, "address", None) or "unknown"
+        candidate_port = getattr(candidate, "port", None) or "unknown"
+        redacted_candidate = candidate_str[:180] + ("..." if len(candidate_str) > 180 else "")
         log.warning(
-            "Local ICE candidate type=%s protocol=%s session=%s",
+            "Local ICE candidate type=%s protocol=%s addr=%s:%s session=%s candidate=%s",
             getattr(candidate, "type", "unknown"),
             getattr(candidate, "protocol", "unknown"),
+            candidate_ip,
+            candidate_port,
             session.session_id,
+            redacted_candidate,
         )
         await ws.send_json(
             {
@@ -286,10 +370,21 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
+    gather_wait_ms = int(os.getenv("VISIVO_ICE_GATHER_TIMEOUT_MS", "1500"))
+    if gather_wait_ms > 0:
+        gather_deadline = time.time() + (gather_wait_ms / 1000.0)
+        while pc.iceGatheringState != "complete" and time.time() < gather_deadline:
+            await asyncio.sleep(0.05)
+        log.warning(
+            "Offer dispatch session=%s iceGatheringState=%s timeoutMs=%s",
+            session.session_id,
+            pc.iceGatheringState,
+            gather_wait_ms,
+        )
     await ws.send_json(
         {
             "type": "offer",
-            "description": {"type": offer.type, "sdp": offer.sdp},
+            "description": {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp},
             "iceServers": config.client_ice_servers,
         }
     )
@@ -482,11 +577,18 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             if msg_type in {"ice", "ice-candidate", "webrtc.ice"}:
                 candidate = _normalize_candidate(payload)
                 if candidate and session.peer_connection:
+                    candidate_str = getattr(candidate, "candidate", "") or ""
+                    redacted_candidate = candidate_str[:180] + ("..." if len(candidate_str) > 180 else "")
+                    candidate_ip = getattr(candidate, "ip", None) or getattr(candidate, "address", None) or "unknown"
+                    candidate_port = getattr(candidate, "port", None) or "unknown"
                     log.warning(
-                        "Remote ICE candidate type=%s protocol=%s session=%s",
+                        "Remote ICE candidate type=%s protocol=%s addr=%s:%s session=%s candidate=%s",
                         getattr(candidate, "type", "unknown"),
                         getattr(candidate, "protocol", "unknown"),
+                        candidate_ip,
+                        candidate_port,
                         session.session_id,
+                        redacted_candidate,
                     )
                     await session.peer_connection.addIceCandidate(candidate)
                 continue
@@ -611,6 +713,15 @@ async def on_shutdown() -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     global cleanup_task
+    backend_turn = any(_has_turn(entry) for entry in config.ice_servers if isinstance(entry, dict))
+    client_turn = any(_has_turn(entry) for entry in config.client_ice_servers if isinstance(entry, dict))
+    log.warning(
+        "Startup ICE summary backend_entries=%s backend_has_turn=%s client_entries=%s client_has_turn=%s",
+        len(config.ice_servers),
+        backend_turn,
+        len(config.client_ice_servers),
+        client_turn,
+    )
 
     async def _cleanup_loop() -> None:
         while True:
