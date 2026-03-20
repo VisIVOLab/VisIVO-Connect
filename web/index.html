@@ -267,9 +267,19 @@
 
                     <label class="field compact-field">
                       <span>Palette</span>
-                      <select id="volumePalette">
-                        <option value="Inferno" selected>Inferno</option>
-                      </select>
+                      <div class="palette-picker" id="volumePalettePicker">
+                        <button
+                          class="palette-picker-button"
+                          id="volumePaletteButton"
+                          type="button"
+                          aria-haspopup="listbox"
+                          aria-expanded="false"
+                        >
+                          <span class="palette-picker-button-name" id="volumePaletteButtonName">Inferno</span>
+                          <span class="palette-picker-button-swatch" id="volumePaletteButtonSwatch" aria-hidden="true"></span>
+                        </button>
+                        <div class="palette-picker-menu hidden" id="volumePaletteMenu" role="listbox" aria-label="Palette list"></div>
+                      </div>
                     </label>
 
                     <label class="field compact-field">

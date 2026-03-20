@@ -273,6 +273,93 @@ input {
   line-height: 1.3;
 }
 
+.palette-picker {
+  position: relative;
+}
+
+.palette-picker-button {
+  width: 100%;
+  min-height: var(--control);
+  padding: 0 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(140, 173, 211, 0.18);
+  color: var(--text);
+  background: rgba(6, 12, 20, 0.72);
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.palette-picker-button:focus,
+.palette-picker-button[data-open="true"] {
+  border-color: rgba(87, 215, 255, 0.48);
+  box-shadow: 0 0 0 3px rgba(87, 215, 255, 0.12);
+}
+
+.palette-picker-button-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-picker-button-swatch,
+.palette-option-swatch {
+  flex: 0 0 auto;
+  width: 92px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(140, 173, 211, 0.2);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.35), rgba(255, 255, 255, 0.35));
+}
+
+.palette-picker-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 18px;
+  border: 1px solid rgba(140, 173, 211, 0.18);
+  background: rgba(10, 18, 28, 0.98);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+}
+
+.palette-option {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+}
+
+.palette-option:hover,
+.palette-option:focus-visible,
+.palette-option[aria-selected="true"] {
+  background: rgba(87, 215, 255, 0.12);
+}
+
+.palette-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .overlay-kicker {
   color: var(--accent);
   text-transform: uppercase;

@@ -31,7 +31,11 @@ const elements = {
   volumeRenderMode: document.getElementById("volumeRenderMode"),
   volumeOpacityScale: document.getElementById("volumeOpacityScale"),
   volumeOpacityScaleValue: document.getElementById("volumeOpacityScaleValue"),
-  volumePalette: document.getElementById("volumePalette"),
+  volumePalettePicker: document.getElementById("volumePalettePicker"),
+  volumePaletteButton: document.getElementById("volumePaletteButton"),
+  volumePaletteButtonName: document.getElementById("volumePaletteButtonName"),
+  volumePaletteButtonSwatch: document.getElementById("volumePaletteButtonSwatch"),
+  volumePaletteMenu: document.getElementById("volumePaletteMenu"),
   volumeScaleMode: document.getElementById("volumeScaleMode"),
   volumePalettePreview: document.getElementById("volumePalettePreview"),
   volumePalettePreviewCaption: document.getElementById("volumePalettePreviewCaption"),
@@ -213,6 +217,7 @@ const state = {
     availablePalettes: ["Inferno"],
     paletteCatalog: [],
     palettePreviewColors: [],
+    paletteMenuOpen: false,
     opacityScale: 1.8,
     sampleDistanceScale: null,
     sampleDistanceManual: false,
@@ -327,7 +332,6 @@ elements.targetFpsValue.textContent = formatFps(state.renderParams.targetFps);
 elements.interactiveDownsampleValue.textContent = `${state.quality.interactiveDownsample.toFixed(1)}x`;
 elements.hqDetailPreset.value = state.quality.hqDetailPreset;
 elements.visualizationMode.value = state.visualization.mode;
-elements.volumePalette.value = state.volume.palette;
 elements.volumeScaleMode.value = state.volume.scaleMode;
 applyIsoRange(state.visualization.isoRangeMin, state.visualization.isoRangeMax);
 elements.isoValue.value = String(state.visualization.isoValue);
@@ -506,17 +510,30 @@ elements.volumeOpacityScale.addEventListener("input", () => {
   sendRenderParams();
 });
 
-elements.volumePalette.addEventListener("change", () => {
-  state.volume.palette = elements.volumePalette.value || "Inferno";
-  state.volume.palettePreviewColors = [];
-  syncPalettePreview();
-  sendRenderParams();
+elements.volumePaletteButton.addEventListener("click", () => {
+  setPaletteMenuOpen(!state.volume.paletteMenuOpen);
 });
 
 elements.volumeScaleMode.addEventListener("change", () => {
   state.volume.scaleMode = elements.volumeScaleMode.value === "log" ? "log" : "linear";
   syncPalettePreview();
   sendRenderParams();
+});
+
+document.addEventListener("click", (event) => {
+  if (!state.volume.paletteMenuOpen) {
+    return;
+  }
+  if (!elements.volumePalettePicker.contains(event.target)) {
+    setPaletteMenuOpen(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.volume.paletteMenuOpen) {
+    setPaletteMenuOpen(false);
+    elements.volumePaletteButton.focus();
+  }
 });
 
 elements.volumeSampleDistanceScale.addEventListener("input", () => {
@@ -1996,20 +2013,72 @@ function syncVolumePaletteOptions() {
     ? state.volume.availablePalettes
     : ["Inferno"];
   const selected = palettes.includes(state.volume.palette) ? state.volume.palette : palettes[0];
-  const existing = Array.from(elements.volumePalette.options).map((option) => option.value);
-  const needsRebuild = existing.length !== palettes.length || existing.some((value, index) => value !== palettes[index]);
-  if (needsRebuild) {
-    elements.volumePalette.replaceChildren(
-      ...palettes.map((name) => {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-        return option;
-      })
-    );
-  }
   state.volume.palette = selected;
-  elements.volumePalette.value = selected;
+  renderPaletteMenu();
+}
+
+function palettePreviewColorsFor(name) {
+  if (!name) {
+    return [];
+  }
+  if (name === state.volume.palette && Array.isArray(state.volume.palettePreviewColors) && state.volume.palettePreviewColors.length > 0) {
+    return state.volume.palettePreviewColors;
+  }
+  const catalogEntry = Array.isArray(state.volume.paletteCatalog)
+    ? state.volume.paletteCatalog.find((entry) => entry.name === name)
+    : null;
+  return catalogEntry && Array.isArray(catalogEntry.previewColors) ? catalogEntry.previewColors : [];
+}
+
+function paletteGradient(colors) {
+  return colors.length > 0
+    ? `linear-gradient(90deg, ${colors.join(", ")})`
+    : "linear-gradient(90deg, rgba(0, 0, 0, 0.35), rgba(255, 255, 255, 0.35))";
+}
+
+function renderPaletteMenu() {
+  const palettes = Array.isArray(state.volume.availablePalettes) && state.volume.availablePalettes.length > 0
+    ? state.volume.availablePalettes
+    : ["Inferno"];
+  elements.volumePaletteButtonName.textContent = state.volume.palette || palettes[0];
+  elements.volumePaletteButtonSwatch.style.background = paletteGradient(palettePreviewColorsFor(state.volume.palette));
+  elements.volumePaletteMenu.replaceChildren(
+    ...palettes.map((name) => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "palette-option";
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", name === state.volume.palette ? "true" : "false");
+      option.dataset.value = name;
+
+      const label = document.createElement("span");
+      label.className = "palette-option-name";
+      label.textContent = name;
+
+      const swatch = document.createElement("span");
+      swatch.className = "palette-option-swatch";
+      swatch.style.background = paletteGradient(palettePreviewColorsFor(name));
+
+      option.append(label, swatch);
+      option.addEventListener("click", () => {
+        if (state.volume.palette !== name) {
+          state.volume.palette = name;
+          state.volume.palettePreviewColors = [];
+          syncPalettePreview();
+          sendRenderParams();
+        }
+        setPaletteMenuOpen(false);
+      });
+      return option;
+    })
+  );
+}
+
+function setPaletteMenuOpen(open) {
+  state.volume.paletteMenuOpen = Boolean(open);
+  elements.volumePaletteMenu.classList.toggle("hidden", !state.volume.paletteMenuOpen);
+  elements.volumePaletteButton.dataset.open = state.volume.paletteMenuOpen ? "true" : "false";
+  elements.volumePaletteButton.setAttribute("aria-expanded", state.volume.paletteMenuOpen ? "true" : "false");
 }
 
 function mergePaletteCatalog(catalog) {
@@ -2030,24 +2099,16 @@ function mergePaletteCatalog(catalog) {
 }
 
 function currentPalettePreviewColors() {
-  if (Array.isArray(state.volume.palettePreviewColors) && state.volume.palettePreviewColors.length > 0) {
-    return state.volume.palettePreviewColors;
-  }
-  const catalogEntry = Array.isArray(state.volume.paletteCatalog)
-    ? state.volume.paletteCatalog.find((entry) => entry.name === state.volume.palette)
-    : null;
-  if (catalogEntry && Array.isArray(catalogEntry.previewColors) && catalogEntry.previewColors.length > 0) {
-    return catalogEntry.previewColors;
-  }
-  return [];
+  return palettePreviewColorsFor(state.volume.palette);
 }
 
 function syncPalettePreview() {
   const colors = currentPalettePreviewColors();
-  const gradientColors = colors.length > 0 ? colors.join(", ") : "rgba(0, 0, 0, 0.35), rgba(255, 255, 255, 0.35)";
-  elements.volumePalettePreview.style.background = `linear-gradient(90deg, ${gradientColors})`;
+  elements.volumePalettePreview.style.background = paletteGradient(colors);
   const scaleLabel = state.volume.scaleMode === "log" ? "log mapping" : "linear mapping";
   elements.volumePalettePreviewCaption.textContent = `${state.volume.palette} · ${scaleLabel}`;
+  elements.volumePaletteButtonName.textContent = state.volume.palette;
+  elements.volumePaletteButtonSwatch.style.background = paletteGradient(colors);
 }
 
 function syncVolumeControlsToUI() {
@@ -2073,6 +2134,7 @@ function syncVolumeControlsToUI() {
   elements.cropEnabled.checked = Boolean(state.volume.cropping.enabled);
   syncCropBoundsFromUI();
   syncPalettePreview();
+  renderPaletteMenu();
   toggleVisualizationControls();
 }
 
