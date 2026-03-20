@@ -70,6 +70,16 @@ const elements = {
   metricsGpuOffscreen: document.getElementById("metricsGpuOffscreen"),
   metricsCpuFallback: document.getElementById("metricsCpuFallback"),
   metricsFallbackReason: document.getElementById("metricsFallbackReason"),
+  metricsActiveMapperClass: document.getElementById("metricsActiveMapperClass"),
+  metricsRequestedMapperClass: document.getElementById("metricsRequestedMapperClass"),
+  metricsSmartMapperRequestedMode: document.getElementById("metricsSmartMapperRequestedMode"),
+  metricsSmartMapperLastUsedMode: document.getElementById("metricsSmartMapperLastUsedMode"),
+  metricsPipelineRenderTime: document.getElementById("metricsPipelineRenderTime"),
+  metricsPipelineCaptureTime: document.getElementById("metricsPipelineCaptureTime"),
+  metricsPipelineConversionTime: document.getElementById("metricsPipelineConversionTime"),
+  metricsPipelineEncodeTime: document.getElementById("metricsPipelineEncodeTime"),
+  metricsPipelinePacingTime: document.getElementById("metricsPipelinePacingTime"),
+  metricsPipelineTotalTime: document.getElementById("metricsPipelineTotalTime"),
   metricsFitsOpen: document.getElementById("metricsFitsOpen"),
   metricsHduSelect: document.getElementById("metricsHduSelect"),
   metricsSanitizeConvert: document.getElementById("metricsSanitizeConvert"),
@@ -2086,6 +2096,7 @@ function renderMetrics(payload) {
   const runtime = payload?.runtimeMetrics || {};
   const importMetrics = payload?.importMetrics || {};
   const renderer = payload?.rendererDiagnostics || {};
+  const pipeline = payload?.pipelineMetrics || {};
   const datasetName = payload?.datasetName || payload?.datasetPath || "-";
 
   setText(elements.metricsSessionId, payload?.sessionId || state.sessionId || "-");
@@ -2105,6 +2116,16 @@ function renderMetrics(payload) {
   setText(elements.metricsGpuOffscreen, formatBoolean(renderer.gpuOffscreenAvailable));
   setText(elements.metricsCpuFallback, formatBoolean(renderer.cpuFallbackAvailable));
   setText(elements.metricsFallbackReason, renderer.fallbackReason || "-");
+  setText(elements.metricsActiveMapperClass, pipeline.activeMapperClass || renderer.activeMapperClass || "-");
+  setText(elements.metricsRequestedMapperClass, pipeline.requestedMapperClass || renderer.requestedMapperClass || "-");
+  setText(elements.metricsSmartMapperRequestedMode, pipeline.smartMapperRequestedMode || renderer.smartMapperRequestedMode || "-");
+  setText(elements.metricsSmartMapperLastUsedMode, pipeline.smartMapperLastUsedMode || renderer.smartMapperLastUsedMode || "-");
+  setText(elements.metricsPipelineRenderTime, formatMs(pipeline.renderTimeMs));
+  setText(elements.metricsPipelineCaptureTime, formatMs(pipeline.frameCaptureReadbackTimeMs));
+  setText(elements.metricsPipelineConversionTime, formatMs(pipeline.frameConversionTimeMs));
+  setText(elements.metricsPipelineEncodeTime, formatMs(pipeline.encodeTimeMs));
+  setText(elements.metricsPipelinePacingTime, formatMs(pipeline.rtpPacingTimeMs));
+  setText(elements.metricsPipelineTotalTime, formatMs(pipeline.totalFramePipelineTimeMs));
 
   setText(elements.metricsFitsOpen, formatMs(importMetrics.fitsOpenMs));
   setText(elements.metricsHduSelect, formatMs(importMetrics.hduSelectMs));

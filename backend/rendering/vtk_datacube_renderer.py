@@ -443,6 +443,52 @@ class VTKDatacubeRenderer:
             extract(patterns["version"]),
         )
 
+    def _smart_mapper_mode_name(self, value: int | None) -> str | None:
+        if value is None:
+            return None
+        mapper = vtk.vtkSmartVolumeMapper
+        mapping = {
+            getattr(mapper, "DefaultRenderMode", object()): "default",
+            getattr(mapper, "RayCastRenderMode", object()): "raycast",
+            getattr(mapper, "GPURenderMode", object()): "gpu",
+            getattr(mapper, "OSPRayRenderMode", object()): "ospray",
+            getattr(mapper, "AnariRenderMode", object()): "anari",
+            getattr(mapper, "InvalidRenderMode", object()): "invalid",
+            getattr(mapper, "UndefinedRenderMode", object()): "undefined",
+        }
+        return mapping.get(value, str(value))
+
+    def _active_mapper_diagnostics(self) -> dict[str, Any]:
+        active_mapper_class = self.volume_mapper.GetClassName() if self.volume_mapper is not None else None
+        requested_mapper_class = self.gpu_volume_mapper.GetClassName() if self.gpu_volume_mapper is not None else None
+        if self._active_mapper_name != "gpu":
+            requested_mapper_class = self.cpu_fallback_mapper.GetClassName() if self.cpu_fallback_mapper is not None else None
+
+        smart_requested_mode: str | None = None
+        smart_last_used_mode: str | None = None
+        if isinstance(self.volume_mapper, vtk.vtkSmartVolumeMapper):
+            requested_mode = None
+            last_used_mode = None
+            if hasattr(self.volume_mapper, "GetRequestedRenderMode"):
+                try:
+                    requested_mode = int(self.volume_mapper.GetRequestedRenderMode())
+                except Exception:
+                    requested_mode = None
+            if hasattr(self.volume_mapper, "GetLastUsedRenderMode"):
+                try:
+                    last_used_mode = int(self.volume_mapper.GetLastUsedRenderMode())
+                except Exception:
+                    last_used_mode = None
+            smart_requested_mode = self._smart_mapper_mode_name(requested_mode)
+            smart_last_used_mode = self._smart_mapper_mode_name(last_used_mode)
+
+        return {
+            "activeMapperClass": active_mapper_class,
+            "requestedMapperClass": requested_mapper_class,
+            "smartMapperRequestedMode": smart_requested_mode,
+            "smartMapperLastUsedMode": smart_last_used_mode,
+        }
+
     def _configure_slice_pipeline(self, image_data: vtk.vtkImageData) -> None:
         self.slice_mapper.SetInputData(image_data)
         self._apply_slice_axis()
@@ -586,8 +632,8 @@ class VTKDatacubeRenderer:
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = dict(self._runtime_capabilities)
-        capabilities["volumeMapperClass"] = self.volume_mapper.GetClassName() if self.volume_mapper is not None else None
-        capabilities["activeMapperClass"] = self.volume_mapper.GetClassName() if self.volume_mapper is not None else None
+        capabilities.update(self._active_mapper_diagnostics())
+        capabilities["volumeMapperClass"] = capabilities.get("activeMapperClass")
         capabilities["selectedRenderPath"] = self._selected_render_path
         capabilities["capabilityProfile"] = self._capability_profile_name
         capabilities["fallbackReason"] = self._fallback_reason
@@ -907,14 +953,20 @@ class VTKDatacubeRenderer:
         camera.SetFocalPoint(*(focal + shift))
         self.renderer.ResetCameraClippingRange()
 
-    def render_bgr_frame(self) -> tuple[np.ndarray, int, int]:
+    def render_bgr_frame(self) -> tuple[np.ndarray, int, int, dict[str, Any]]:
         if self._closed:
             raise RuntimeError("renderer is closed")
         started_ns = time.time_ns()
+        render_started_ns = started_ns
         self.render_window.Render()
+        render_finished_ns = time.time_ns()
+
+        capture_started_ns = render_finished_ns
         self.window_to_image.Modified()
         self.window_to_image.Update()
+        capture_finished_ns = time.time_ns()
 
+        conversion_started_ns = capture_finished_ns
         vtk_image = self.window_to_image.GetOutput()
         width, height, _ = vtk_image.GetDimensions()
         scalars = vtk_image.GetPointData().GetScalars()
@@ -924,7 +976,15 @@ class VTKDatacubeRenderer:
         bgr = rgb[:, :, ::-1].copy()
         self._handle_black_frame_detection(bgr)
         finished_ns = time.time_ns()
-        return bgr, started_ns, finished_ns
+        mapper_diagnostics = self._active_mapper_diagnostics()
+        pipeline_metrics = {
+            "renderTimeMs": (render_finished_ns - render_started_ns) / 1e6,
+            "frameCaptureReadbackTimeMs": (capture_finished_ns - capture_started_ns) / 1e6,
+            "frameConversionTimeMs": (finished_ns - conversion_started_ns) / 1e6,
+            "totalFramePipelineTimeMs": (finished_ns - started_ns) / 1e6,
+            **mapper_diagnostics,
+        }
+        return bgr, started_ns, finished_ns, pipeline_metrics
 
     def close(self) -> None:
         if self._closed:

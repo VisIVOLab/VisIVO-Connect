@@ -153,6 +153,9 @@ class SessionFakeRenderer:
             "selectedRenderPath": "cpu",
             "capabilityProfile": "cpu-safe",
             "fallbackReason": "fake-renderer",
+            "requestedMapperClass": "FakeVolumeMapper",
+            "smartMapperRequestedMode": "raycast",
+            "smartMapperLastUsedMode": "raycast",
         }
 
     def get_renderer_diagnostics(self) -> dict[str, Any]:
@@ -191,7 +194,7 @@ class SessionFakeRenderer:
     def apply_zoom(self, zoom_factor: float) -> None:
         return
 
-    def render_bgr_frame(self) -> tuple[np.ndarray, int, int]:
+    def render_bgr_frame(self) -> tuple[np.ndarray, int, int, dict[str, Any]]:
         started_ns = time.time_ns()
         if self._render_latency_s > 0.0:
             time.sleep(self._render_latency_s)
@@ -203,7 +206,16 @@ class SessionFakeRenderer:
         frame[0, 0, 1] = 1 if self.current_mode == "interactive" else 2
         frame[0, 0, 2] = self.volume.visible
         frame[1, 1, 0] = int(self.volume_mapper.sample_distance * 10.0) % 255
-        return frame, started_ns, finished_ns
+        return frame, started_ns, finished_ns, {
+            "renderTimeMs": (finished_ns - started_ns) / 1e6,
+            "frameCaptureReadbackTimeMs": 0.05,
+            "frameConversionTimeMs": 0.05,
+            "totalFramePipelineTimeMs": ((finished_ns - started_ns) / 1e6) + 0.10,
+            "activeMapperClass": "FakeVolumeMapper",
+            "requestedMapperClass": "FakeVolumeMapper",
+            "smartMapperRequestedMode": "raycast",
+            "smartMapperLastUsedMode": "raycast",
+        }
 
     @property
     def target_update_interval(self) -> float:

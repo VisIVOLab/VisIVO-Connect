@@ -16,7 +16,11 @@ class QualityProfile:
 @dataclass
 class RenderStats:
     render_time_ms: list[float] = field(default_factory=list)
+    frame_capture_time_ms: list[float] = field(default_factory=list)
+    frame_conversion_time_ms: list[float] = field(default_factory=list)
     encode_time_ms: list[float] = field(default_factory=list)
+    rtp_pacing_time_ms: list[float] = field(default_factory=list)
+    total_frame_pipeline_time_ms: list[float] = field(default_factory=list)
     frame_delivery_latency_ms: list[float] = field(default_factory=list)
     input_to_visible_latency_ms: list[float] = field(default_factory=list)
     network_latency_ms: list[float] = field(default_factory=list)
@@ -36,6 +40,7 @@ class FramePacket:
     render_started_ns: int
     render_finished_ns: int
     mode: str
+    pipeline_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

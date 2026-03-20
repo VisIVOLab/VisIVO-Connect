@@ -42,6 +42,12 @@ cleanup_task = None
 log = logging.getLogger("uvicorn.error")
 
 
+def _sample_mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
 def _iter_urls(entry: dict[str, Any]) -> list[str]:
     urls = entry.get("urls")
     if isinstance(urls, str):
@@ -412,6 +418,18 @@ async def _ws_stream_loop(
             jpeg_bytes = encoder.encode(frame_packet.frame_bgr)
             encode_ms = (time.time_ns() - encode_started_ns) / 1e6
             session.stats.add_sample(session.stats.encode_time_ms, encode_ms)
+            session.stats.add_sample(session.stats.rtp_pacing_time_ms, 0.0)
+            total_pipeline_ms = (time.time_ns() - frame_packet.render_started_ns) / 1e6
+            session.stats.add_sample(session.stats.total_frame_pipeline_time_ms, total_pipeline_ms)
+            pipeline_metrics = dict(frame_packet.pipeline_metrics)
+            pipeline_metrics.update(
+                {
+                    "encodeTimeMs": encode_ms,
+                    "rtpPacingTimeMs": 0.0,
+                    "totalFramePipelineTimeMs": total_pipeline_ms,
+                }
+            )
+            session.latest_pipeline_metrics = pipeline_metrics
             if not jpeg_bytes:
                 await asyncio.sleep(min_interval_s)
                 continue
@@ -460,6 +478,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
     session = await sessions.get(session_id)
     if session is None:
         return JSONResponse({"error": "session not found"}, status_code=404)
+    pipeline_metrics = dict(session.latest_pipeline_metrics)
     return JSONResponse(
         {
             "sessionId": session.session_id,
@@ -500,6 +519,18 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "highQualityRenderTimeMs": session.runtime_metrics.high_quality_render_time_ms,
                 "interactiveFps": session.runtime_metrics.interactive_fps,
                 "memoryRssMb": session.runtime_metrics.memory_rss_mb,
+            },
+            "pipelineMetrics": {
+                "activeMapperClass": pipeline_metrics.get("activeMapperClass"),
+                "requestedMapperClass": pipeline_metrics.get("requestedMapperClass"),
+                "smartMapperRequestedMode": pipeline_metrics.get("smartMapperRequestedMode"),
+                "smartMapperLastUsedMode": pipeline_metrics.get("smartMapperLastUsedMode"),
+                "renderTimeMs": _sample_mean(session.stats.render_time_ms),
+                "frameCaptureReadbackTimeMs": _sample_mean(session.stats.frame_capture_time_ms),
+                "frameConversionTimeMs": _sample_mean(session.stats.frame_conversion_time_ms),
+                "encodeTimeMs": _sample_mean(session.stats.encode_time_ms),
+                "rtpPacingTimeMs": _sample_mean(session.stats.rtp_pacing_time_ms),
+                "totalFramePipelineTimeMs": _sample_mean(session.stats.total_frame_pipeline_time_ms),
             },
             "rendererDiagnostics": session.renderer.get_renderer_diagnostics(),
         }

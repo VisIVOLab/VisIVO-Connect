@@ -48,6 +48,7 @@ class RemoteRenderSession:
         self.import_metrics: FitsImportMetrics | None = consume_last_fits_import_metrics()
 
         self._latest_frame: FramePacket | None = None
+        self.latest_pipeline_metrics: dict[str, Any] = {}
         self._frame_serial = 0
         self._dirty = True
         self._last_input_ns = 0
@@ -274,9 +275,18 @@ class RemoteRenderSession:
                 return self._latest_frame
 
         with self._renderer_lock:
-            frame_bgr, started_ns, finished_ns = self.renderer.render_bgr_frame()
-        render_ms = (finished_ns - started_ns) / 1e6
+            frame_bgr, started_ns, finished_ns, pipeline_metrics = self.renderer.render_bgr_frame()
+        render_ms = float(pipeline_metrics.get("renderTimeMs", (finished_ns - started_ns) / 1e6))
         self.stats.add_sample(self.stats.render_time_ms, render_ms)
+        capture_ms = pipeline_metrics.get("frameCaptureReadbackTimeMs")
+        if isinstance(capture_ms, (int, float)):
+            self.stats.add_sample(self.stats.frame_capture_time_ms, float(capture_ms))
+        conversion_ms = pipeline_metrics.get("frameConversionTimeMs")
+        if isinstance(conversion_ms, (int, float)):
+            self.stats.add_sample(self.stats.frame_conversion_time_ms, float(conversion_ms))
+        total_pipeline_ms = pipeline_metrics.get("totalFramePipelineTimeMs")
+        if isinstance(total_pipeline_ms, (int, float)):
+            self.stats.add_sample(self.stats.total_frame_pipeline_time_ms, float(total_pipeline_ms))
         self.runtime_metrics.record_render(
             mode=self.mode,
             render_ms=render_ms,
@@ -299,7 +309,9 @@ class RemoteRenderSession:
             render_started_ns=started_ns,
             render_finished_ns=finished_ns,
             mode=self.mode,
+            pipeline_metrics=dict(pipeline_metrics),
         )
+        self.latest_pipeline_metrics = dict(pipeline_metrics)
         self._last_render_finished_ns = finished_ns
         self._dirty = False
         return self._latest_frame
