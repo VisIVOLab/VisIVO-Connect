@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -18,21 +17,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from backend.core.config import AppConfig, load_config
+from backend.core.config import AppConfig, ConfigError, load_config, resolve_dataset_path
 from backend.core.session import RemoteRenderSession, SessionManager
 from backend.transport.video_track import LatestFrameVideoTrack
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 WEB_DIR = BASE_DIR / "web"
-config: AppConfig = load_config()
-app = FastAPI(title="VisIVO Connect", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+try:
+    config: AppConfig = load_config()
+except ConfigError as exc:
+    raise RuntimeError(f"Invalid VisIVO configuration: {exc}") from exc
+
+APP_STARTED_NS = time.time_ns()
+STARTUP_WARNINGS: list[str] = []
+STARTUP_ERRORS: list[str] = []
+LAST_RENDERER_DIAGNOSTICS: dict[str, Any] | None = None
+
+app = FastAPI(title=config.app_name, version=config.app_version)
+if config.allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 if WEB_DIR.exists():
     app.mount("/web", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
@@ -40,12 +49,110 @@ if WEB_DIR.exists():
 sessions = SessionManager(max_sessions=config.max_sessions, idle_timeout_s=config.idle_timeout_s)
 cleanup_task = None
 log = logging.getLogger("uvicorn.error")
+log.setLevel(getattr(logging, config.log_level, logging.INFO))
+
+
+class ClientFacingError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        phase: str,
+        retryable: bool = False,
+        details: dict[str, Any] | None = None,
+        close_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.phase = phase
+        self.retryable = retryable
+        self.details = details or {}
+        self.close_code = close_code
 
 
 def _sample_mean(values: list[float]) -> float | None:
     if not values:
         return None
     return float(sum(values) / len(values))
+
+
+def _uptime_s() -> float:
+    return max(0.0, (time.time_ns() - APP_STARTED_NS) / 1e9)
+
+
+def _error_payload(
+    code: str,
+    message: str,
+    *,
+    phase: str,
+    retryable: bool = False,
+    session_id: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "error",
+        "code": code,
+        "message": message,
+        "phase": phase,
+        "retryable": retryable,
+    }
+    if session_id:
+        payload["sessionId"] = session_id
+    if details:
+        payload["details"] = details
+    return payload
+
+
+def _error_response(
+    code: str,
+    message: str,
+    *,
+    phase: str,
+    status_code: int,
+    retryable: bool = False,
+    details: dict[str, Any] | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        _error_payload(code, message, phase=phase, retryable=retryable, details=details),
+        status_code=status_code,
+    )
+
+
+async def _send_ws_error(
+    ws: WebSocket,
+    code: str,
+    message: str,
+    *,
+    phase: str,
+    retryable: bool = False,
+    session_id: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    await ws.send_json(
+        _error_payload(
+            code,
+            message,
+            phase=phase,
+            retryable=retryable,
+            session_id=session_id,
+            details=details,
+        )
+    )
+
+
+def _startup_snapshot() -> dict[str, Any]:
+    return {
+        "status": "ok" if not STARTUP_ERRORS else "error",
+        "uptimeS": round(_uptime_s(), 3),
+        "backendVersion": config.app_version,
+        "frontendBuild": config.frontend_build,
+        "webDirPresent": WEB_DIR.exists(),
+        "warnings": list(STARTUP_WARNINGS),
+        "errors": list(STARTUP_ERRORS),
+        "config": config.sanitized_summary(),
+    }
 
 
 def _is_relay_candidate(candidate: Any) -> bool:
@@ -316,6 +423,8 @@ def _normalize_candidate(payload: dict[str, Any]) -> RTCIceCandidate | None:
 
 
 async def _emit_state(ws: WebSocket, session: RemoteRenderSession, text: str | None = None) -> None:
+    global LAST_RENDERER_DIAGNOSTICS
+    LAST_RENDERER_DIAGNOSTICS = session.renderer.get_renderer_diagnostics()
     await ws.send_json(session.state_payload(text=text))
 
 
@@ -488,12 +597,7 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket, r
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    gather_wait_ms = int(
-        os.getenv(
-            "VISIVO_ICE_GATHER_TIMEOUT_MS_RELAY" if relay_only else "VISIVO_ICE_GATHER_TIMEOUT_MS",
-            "200" if relay_only else "300",
-        )
-    )
+    gather_wait_ms = config.ice_gather_timeout_ms_relay if relay_only else config.ice_gather_timeout_ms
     if gather_wait_ms > 0:
         gather_deadline = time.time() + (gather_wait_ms / 1000.0)
         while pc.iceGatheringState != "complete" and time.time() < gather_deadline:
@@ -597,23 +701,70 @@ async def _prime_session_frame(session: RemoteRenderSession) -> None:
 @app.get("/")
 async def index() -> Response:
     if not WEB_DIR.exists():
-        return JSONResponse({"error": "web directory not found"}, status_code=404)
+        return _error_response("web-dir-missing", "web directory not found", phase="startup", status_code=404)
     return FileResponse(WEB_DIR / "index.html")
 
 
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": config.app_name,
+            "backendVersion": config.app_version,
+            "frontendBuild": config.frontend_build,
+            "uptimeS": round(_uptime_s(), 3),
+        }
+    )
+
+
+@app.get("/readyz")
+async def readyz() -> JSONResponse:
+    session_summary = await sessions.summary()
+    payload = _startup_snapshot()
+    payload.update(session_summary)
+    payload["rendererDiagnostics"] = LAST_RENDERER_DIAGNOSTICS
+    ready = bool(WEB_DIR.exists() and not STARTUP_ERRORS)
+    if config.strict_dataset_path and config.dataset_path:
+        try:
+            resolve_dataset_path(
+                config.dataset_path,
+                allowed_root=config.dataset_root,
+                strict_exists=True,
+            )
+        except ConfigError as exc:
+            ready = False
+            payload["errors"] = [*payload["errors"], str(exc)]
+    payload["status"] = "ready" if ready else "degraded"
+    return JSONResponse(payload, status_code=200 if ready else 503)
+
+
+@app.get("/api/version")
+async def api_version() -> JSONResponse:
+    return JSONResponse(
+        {
+            "service": config.app_name,
+            "backendVersion": config.app_version,
+            "frontendBuild": config.frontend_build,
+            "uptimeS": round(_uptime_s(), 3),
+            "config": config.sanitized_summary(),
+        }
+    )
+
+
+@app.get("/api/runtime-config")
+async def api_runtime_config() -> JSONResponse:
+    return JSONResponse(config.public_runtime_config())
 
 
 @app.get("/api/metrics/{session_id}")
 async def session_metrics(session_id: str, request: Request) -> JSONResponse:
     metrics_token = request.query_params.get("token")
     if not _is_authorized(metrics_token, config.metrics_auth_token):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return _error_response("unauthorized", "unauthorized", phase="metrics", status_code=401)
     session = await sessions.get(session_id)
     if session is None:
-        return JSONResponse({"error": "session not found"}, status_code=404)
+        return _error_response("session-not-found", "session not found", phase="metrics", status_code=404, retryable=True)
     pipeline_metrics = dict(session.latest_pipeline_metrics)
     return JSONResponse(
         {
@@ -692,9 +843,10 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     session: RemoteRenderSession | None = None
     ws_stream_task: asyncio.Task[None] | None = None
+    phase = "connect"
     token = ws.query_params.get("token")
     if config.auth_token and token and token != config.auth_token:
-        await ws.send_json({"type": "error", "message": "unauthorized"})
+        await _send_ws_error(ws, "unauthorized", "unauthorized", phase="auth", retryable=False)
         await ws.close(code=4401)
         return
 
@@ -704,198 +856,280 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
-                await ws.send_json({"type": "error", "message": "invalid json"})
+                await _send_ws_error(ws, "invalid-json", "invalid json", phase="protocol", retryable=True)
                 continue
 
             msg_type = payload.get("type")
 
-            if msg_type == "hello":
-                requested_session_id = payload.get("sessionId")
-                dataset_path = payload.get("datasetPath") or config.dataset_path
-                initial_render_params = payload.get("initialRenderParams")
-                force_ws_fallback = bool(payload.get("forceWsFallback"))
-                force_relay_only = bool(payload.get("forceRelayOnly")) or os.getenv("VISIVO_FORCE_RELAY_ONLY", "0") == "1"
-                msg_token = payload.get("token")
-                if config.auth_token and not (msg_token == config.auth_token or token == config.auth_token):
-                    await ws.send_json({"type": "error", "message": "unauthorized"})
-                    await ws.close(code=4401)
-                    return
-                session = await sessions.get_or_create(requested_session_id, dataset_path=dataset_path)
-                session.mark_hello_received()
-                session.control_ws = ws
-                viewport = payload.get("viewport") or {}
-                session.resize(
-                    width=int(viewport.get("width", 1280)),
-                    height=int(viewport.get("height", 720)),
-                    dpr=float(viewport.get("dpr", 1.0)),
-                )
-                if isinstance(initial_render_params, dict):
-                    session.set_render_params({"params": initial_render_params})
-                if not force_ws_fallback:
-                    await _attach_peer_connection(session, ws, relay_only=force_relay_only)
-                else:
+            try:
+                if msg_type == "hello":
+                    phase = "hello"
+                    requested_session_id = payload.get("sessionId")
+                    requested_dataset_path = payload.get("datasetPath")
+                    dataset_path = resolve_dataset_path(
+                        requested_dataset_path,
+                        default_path=config.dataset_path,
+                        allowed_root=config.dataset_root,
+                        strict_exists=config.strict_dataset_path,
+                    )
+                    if config.strict_dataset_path and not dataset_path:
+                        raise ClientFacingError(
+                            "dataset-required",
+                            "No dataset configured for this session",
+                            phase="session-init",
+                            retryable=False,
+                        )
+                    initial_render_params = payload.get("initialRenderParams")
+                    force_ws_fallback = bool(payload.get("forceWsFallback"))
+                    force_relay_only = bool(payload.get("forceRelayOnly")) or config.relay_only_default
+                    msg_token = payload.get("token")
+                    if config.auth_token and not (msg_token == config.auth_token or token == config.auth_token):
+                        raise ClientFacingError("unauthorized", "unauthorized", phase="auth", close_code=4401)
+                    try:
+                        session = await sessions.get_or_create(requested_session_id, dataset_path=dataset_path)
+                    except Exception as exc:
+                        raise ClientFacingError(
+                            "session-init-failed",
+                            "Could not initialize session",
+                            phase="session-init",
+                            retryable=False,
+                            details={"datasetPath": dataset_path},
+                        ) from exc
+                    session.mark_hello_received()
+                    session.control_ws = ws
+                    viewport = payload.get("viewport") or {}
+                    session.resize(
+                        width=int(viewport.get("width", 1280)),
+                        height=int(viewport.get("height", 720)),
+                        dpr=float(viewport.get("dpr", 1.0)),
+                    )
+                    if isinstance(initial_render_params, dict):
+                        session.set_render_params({"params": initial_render_params})
+                    if not force_ws_fallback:
+                        phase = "signaling"
+                        await _attach_peer_connection(session, ws, relay_only=force_relay_only)
+                    else:
+                        await _close_peer_connection(session)
+                        if ws_stream_task is not None:
+                            ws_stream_task.cancel()
+                            try:
+                                await ws_stream_task
+                            except asyncio.CancelledError:
+                                pass
+                        ws_stream_task = asyncio.create_task(_ws_stream_loop(session, ws, 8.0))
+                        await ws.send_json({"type": "ws-stream.started", "fps": 8.0, "sessionId": session.session_id})
+                    await ws.send_json({"type": "stream-ready", "sessionId": session.session_id})
+                    session.mark_stream_ready_sent()
+                    await _emit_state(ws, session, text="Session connected")
+                    if session.maybe_start_warmup_task():
+                        asyncio.create_task(_prime_session_frame(session))
+                    phase = "ready"
+                    continue
+
+                if session is None:
+                    raise ClientFacingError("hello-required", "send hello first", phase="protocol", retryable=True)
+
+                if msg_type in {"answer", "webrtc.answer"}:
+                    phase = "signaling"
+                    description = _normalize_description(payload)
+                    if description and session.peer_connection:
+                        await session.peer_connection.setRemoteDescription(description)
+                        session.mark_remote_answer_set()
+                    continue
+
+                if msg_type in {"webrtc.stop", "rtc.stop"}:
+                    phase = "webrtc-stop"
                     await _close_peer_connection(session)
+                    continue
+
+                if msg_type in {"ice", "ice-candidate", "webrtc.ice"}:
+                    phase = "ice"
+                    candidate = _normalize_candidate(payload)
+                    if candidate and session.peer_connection:
+                        session.latest_ice_metrics["remoteCandidateCount"] = int(
+                            session.latest_ice_metrics.get("remoteCandidateCount", 0)
+                        ) + 1
+                        session.latest_ice_metrics["candidateCount"] = int(
+                            session.latest_ice_metrics.get("candidateCount", 0)
+                        ) + 1
+                        if session.ice_relay_only and not _is_relay_candidate(candidate):
+                            session.latest_ice_metrics["filteredRemoteCandidateCount"] = int(
+                                session.latest_ice_metrics.get("filteredRemoteCandidateCount", 0)
+                            ) + 1
+                            log.warning(
+                                "Filtered remote ICE candidate type=%s session=%s relayOnly=%s",
+                                getattr(candidate, "type", "unknown"),
+                                session.session_id,
+                                session.ice_relay_only,
+                            )
+                            continue
+                        candidate_str = getattr(candidate, "candidate", "") or ""
+                        redacted_candidate = candidate_str[:180] + ("..." if len(candidate_str) > 180 else "")
+                        candidate_ip = getattr(candidate, "ip", None) or getattr(candidate, "address", None) or "unknown"
+                        candidate_port = getattr(candidate, "port", None) or "unknown"
+                        log.warning(
+                            "Remote ICE candidate type=%s protocol=%s addr=%s:%s session=%s candidate=%s",
+                            getattr(candidate, "type", "unknown"),
+                            getattr(candidate, "protocol", "unknown"),
+                            candidate_ip,
+                            candidate_port,
+                            session.session_id,
+                            redacted_candidate,
+                        )
+                        await session.peer_connection.addIceCandidate(candidate)
+                    continue
+
+                if msg_type in {"ws-stream.start", "ws.stream.start"}:
+                    phase = "ws-fallback"
+                    await _close_peer_connection(session)
+                    target_fps = payload.get("fps", 8)
+                    try:
+                        target_fps = float(target_fps)
+                    except Exception:
+                        target_fps = 8.0
+                    target_fps = min(max(target_fps, 1.0), 30.0)
                     if ws_stream_task is not None:
                         ws_stream_task.cancel()
                         try:
                             await ws_stream_task
                         except asyncio.CancelledError:
                             pass
-                    ws_stream_task = asyncio.create_task(_ws_stream_loop(session, ws, 8.0))
-                    await ws.send_json({"type": "ws-stream.started", "fps": 8.0, "sessionId": session.session_id})
-                await ws.send_json({"type": "stream-ready", "sessionId": session.session_id})
-                session.mark_stream_ready_sent()
-                await _emit_state(ws, session, text="Session connected")
-                if session.maybe_start_warmup_task():
-                    asyncio.create_task(_prime_session_frame(session))
-                continue
+                    ws_stream_task = asyncio.create_task(_ws_stream_loop(session, ws, target_fps))
+                    await ws.send_json({"type": "ws-stream.started", "fps": target_fps, "sessionId": session.session_id})
+                    continue
 
-            if session is None:
-                await ws.send_json({"type": "error", "message": "send hello first"})
-                continue
+                if msg_type in {"ws-stream.stop", "ws.stream.stop"}:
+                    phase = "ws-fallback"
+                    if ws_stream_task is not None:
+                        ws_stream_task.cancel()
+                        try:
+                            await ws_stream_task
+                        except asyncio.CancelledError:
+                            pass
+                        ws_stream_task = None
+                    await ws.send_json({"type": "ws-stream.stopped", "sessionId": session.session_id})
+                    continue
 
-            if msg_type in {"answer", "webrtc.answer"}:
-                description = _normalize_description(payload)
-                if description and session.peer_connection:
-                    await session.peer_connection.setRemoteDescription(description)
-                    session.mark_remote_answer_set()
-                continue
-
-            if msg_type in {"webrtc.stop", "rtc.stop"}:
-                await _close_peer_connection(session)
-                continue
-
-            if msg_type in {"ice", "ice-candidate", "webrtc.ice"}:
-                candidate = _normalize_candidate(payload)
-                if candidate and session.peer_connection:
-                    session.latest_ice_metrics["remoteCandidateCount"] = int(
-                        session.latest_ice_metrics.get("remoteCandidateCount", 0)
-                    ) + 1
-                    session.latest_ice_metrics["candidateCount"] = int(
-                        session.latest_ice_metrics.get("candidateCount", 0)
-                    ) + 1
-                    if session.ice_relay_only and not _is_relay_candidate(candidate):
-                        session.latest_ice_metrics["filteredRemoteCandidateCount"] = int(
-                            session.latest_ice_metrics.get("filteredRemoteCandidateCount", 0)
-                        ) + 1
-                        log.warning(
-                            "Filtered remote ICE candidate type=%s session=%s relayOnly=%s",
-                            getattr(candidate, "type", "unknown"),
-                            session.session_id,
-                            session.ice_relay_only,
-                        )
-                        continue
-                    candidate_str = getattr(candidate, "candidate", "") or ""
-                    redacted_candidate = candidate_str[:180] + ("..." if len(candidate_str) > 180 else "")
-                    candidate_ip = getattr(candidate, "ip", None) or getattr(candidate, "address", None) or "unknown"
-                    candidate_port = getattr(candidate, "port", None) or "unknown"
-                    log.warning(
-                        "Remote ICE candidate type=%s protocol=%s addr=%s:%s session=%s candidate=%s",
-                        getattr(candidate, "type", "unknown"),
-                        getattr(candidate, "protocol", "unknown"),
-                        candidate_ip,
-                        candidate_port,
-                        session.session_id,
-                        redacted_candidate,
+                if msg_type == "resize":
+                    phase = "resize"
+                    viewport = payload.get("viewport", {})
+                    session.resize(
+                        width=int(viewport.get("width", session.viewport.width)),
+                        height=int(viewport.get("height", session.viewport.height)),
+                        dpr=float(viewport.get("dpr", session.viewport.dpr)),
                     )
-                    await session.peer_connection.addIceCandidate(candidate)
-                continue
+                    continue
 
-            if msg_type in {"ws-stream.start", "ws.stream.start"}:
-                await _close_peer_connection(session)
-                target_fps = payload.get("fps", 8)
-                try:
-                    target_fps = float(target_fps)
-                except Exception:
-                    target_fps = 8.0
-                target_fps = min(max(target_fps, 1.0), 30.0)
-                if ws_stream_task is not None:
-                    ws_stream_task.cancel()
-                    try:
-                        await ws_stream_task
-                    except asyncio.CancelledError:
-                        pass
-                ws_stream_task = asyncio.create_task(_ws_stream_loop(session, ws, target_fps))
-                await ws.send_json({"type": "ws-stream.started", "fps": target_fps, "sessionId": session.session_id})
-                continue
+                if msg_type == "interaction.start":
+                    phase = "interaction"
+                    session.begin_interaction()
+                    await _emit_state(ws, session)
+                    continue
 
-            if msg_type in {"ws-stream.stop", "ws.stream.stop"}:
-                if ws_stream_task is not None:
-                    ws_stream_task.cancel()
-                    try:
-                        await ws_stream_task
-                    except asyncio.CancelledError:
-                        pass
-                    ws_stream_task = None
-                await ws.send_json({"type": "ws-stream.stopped", "sessionId": session.session_id})
-                continue
+                if msg_type == "interaction.end":
+                    phase = "interaction"
+                    session.end_interaction()
+                    await _emit_state(ws, session)
+                    continue
 
-            if msg_type == "resize":
-                viewport = payload.get("viewport", {})
-                session.resize(
-                    width=int(viewport.get("width", session.viewport.width)),
-                    height=int(viewport.get("height", session.viewport.height)),
-                    dpr=float(viewport.get("dpr", session.viewport.dpr)),
+                if msg_type == "camera.pointer":
+                    phase = "camera"
+                    session.apply_pointer(payload)
+                    continue
+
+                if msg_type == "camera.wheel":
+                    phase = "camera"
+                    session.apply_wheel(payload)
+                    continue
+
+                if msg_type == "camera.pinch":
+                    phase = "camera"
+                    session.apply_pinch(payload)
+                    continue
+
+                if msg_type in {"render.mode", "visualization.mode", "visualization.switch"}:
+                    phase = "render-config"
+                    requested_mode = payload.get("mode")
+                    if requested_mode is None:
+                        requested_mode = payload.get("visualizationMode")
+                    if isinstance(requested_mode, str):
+                        normalized = requested_mode.strip().lower().replace("_", "-")
+                        if normalized in {"interactive", "high-quality"}:
+                            session.set_mode(normalized)
+                        else:
+                            session.set_visualization_mode(requested_mode)
+                    await _emit_state(ws, session)
+                    continue
+
+                if msg_type in {"render.params", "visualization.params", "visualization.update"}:
+                    phase = "render-config"
+                    session.set_render_params(payload)
+                    await _emit_state(ws, session)
+                    continue
+
+                if msg_type == "control-input":
+                    phase = "control-ack"
+                    sent_at = payload.get("sentAt")
+                    if isinstance(sent_at, (int, float)):
+                        rtt_ms = max(0.0, float(time.time_ns() / 1e6 - sent_at))
+                        session.stats.add_sample(session.stats.network_latency_ms, rtt_ms)
+                    await ws.send_json({"type": "control-ack", "id": payload.get("id"), "sequence": payload.get("sequence")})
+                    continue
+
+                if msg_type == "ping":
+                    phase = "ping"
+                    ts = payload.get("ts")
+                    if isinstance(ts, (int, float)):
+                        rtt_ms = max(0.0, float(time.time_ns() / 1e6 - ts))
+                        session.stats.add_sample(session.stats.network_latency_ms, rtt_ms)
+                    await ws.send_json({"type": "pong", "ts": ts})
+                    continue
+
+                raise ClientFacingError(
+                    "unsupported-message-type",
+                    f"unsupported message type: {msg_type}",
+                    phase="protocol",
+                    retryable=True,
                 )
-                continue
-
-            if msg_type == "interaction.start":
-                session.begin_interaction()
-                await _emit_state(ws, session)
-                continue
-
-            if msg_type == "interaction.end":
-                session.end_interaction()
-                await _emit_state(ws, session)
-                continue
-
-            if msg_type == "camera.pointer":
-                session.apply_pointer(payload)
-                continue
-
-            if msg_type == "camera.wheel":
-                session.apply_wheel(payload)
-                continue
-
-            if msg_type == "camera.pinch":
-                session.apply_pinch(payload)
-                continue
-
-            if msg_type in {"render.mode", "visualization.mode", "visualization.switch"}:
-                requested_mode = payload.get("mode")
-                if requested_mode is None:
-                    requested_mode = payload.get("visualizationMode")
-                if isinstance(requested_mode, str):
-                    normalized = requested_mode.strip().lower().replace("_", "-")
-                    if normalized in {"interactive", "high-quality"}:
-                        session.set_mode(normalized)
-                    else:
-                        session.set_visualization_mode(requested_mode)
-                await _emit_state(ws, session)
-                continue
-
-            if msg_type in {"render.params", "visualization.params", "visualization.update"}:
-                session.set_render_params(payload)
-                await _emit_state(ws, session)
-                continue
-
-            if msg_type == "control-input":
-                sent_at = payload.get("sentAt")
-                if isinstance(sent_at, (int, float)):
-                    rtt_ms = max(0.0, float(time.time_ns() / 1e6 - sent_at))
-                    session.stats.add_sample(session.stats.network_latency_ms, rtt_ms)
-                await ws.send_json({"type": "control-ack", "id": payload.get("id"), "sequence": payload.get("sequence")})
-                continue
-
-            if msg_type == "ping":
-                ts = payload.get("ts")
-                if isinstance(ts, (int, float)):
-                    rtt_ms = max(0.0, float(time.time_ns() / 1e6 - ts))
-                    session.stats.add_sample(session.stats.network_latency_ms, rtt_ms)
-                await ws.send_json({"type": "pong", "ts": ts})
-                continue
-
-            await ws.send_json({"type": "error", "message": f"unsupported message type: {msg_type}"})
+            except ConfigError as exc:
+                await _send_ws_error(
+                    ws,
+                    "config-invalid",
+                    str(exc),
+                    phase=phase,
+                    retryable=False,
+                    session_id=session.session_id if session else None,
+                )
+            except ClientFacingError as exc:
+                log.warning(
+                    "WS client error phase=%s code=%s session=%s details=%s",
+                    exc.phase,
+                    exc.code,
+                    session.session_id if session else None,
+                    exc.details or None,
+                )
+                await _send_ws_error(
+                    ws,
+                    exc.code,
+                    exc.message,
+                    phase=exc.phase,
+                    retryable=exc.retryable,
+                    session_id=session.session_id if session else None,
+                    details=exc.details,
+                )
+                if exc.close_code is not None:
+                    await ws.close(code=exc.close_code)
+                    return
+            except Exception:
+                log.exception("Unhandled websocket error phase=%s session=%s", phase, session.session_id if session else None)
+                await _send_ws_error(
+                    ws,
+                    "internal-error",
+                    "Internal server error",
+                    phase=phase,
+                    retryable=False,
+                    session_id=session.session_id if session else None,
+                )
 
     except WebSocketDisconnect:
         pass
@@ -907,7 +1141,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             except asyncio.CancelledError:
                 pass
         if session:
-            await sessions.close(session.session_id)
+            session.control_ws = None
+            await _close_peer_connection(session)
 
 
 @app.on_event("shutdown")
@@ -921,8 +1156,28 @@ async def on_shutdown() -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     global cleanup_task
+    STARTUP_WARNINGS.clear()
+    STARTUP_ERRORS.clear()
+    if not WEB_DIR.exists():
+        STARTUP_ERRORS.append(f"web directory not found: {WEB_DIR}")
+    if config.dataset_path:
+        try:
+            resolve_dataset_path(
+                config.dataset_path,
+                allowed_root=config.dataset_root,
+                strict_exists=config.strict_dataset_path,
+            )
+        except ConfigError as exc:
+            if config.strict_dataset_path:
+                STARTUP_ERRORS.append(str(exc))
+            else:
+                STARTUP_WARNINGS.append(str(exc))
+    elif config.is_production:
+        STARTUP_WARNINGS.append("No VISIVO_DATACUBE_PATH configured; clients must provide datasetPath explicitly")
+
     backend_turn = any(_has_turn(entry) for entry in config.ice_servers if isinstance(entry, dict))
     client_turn = any(_has_turn(entry) for entry in config.client_ice_servers if isinstance(entry, dict))
+    log.warning("Startup config %s", json.dumps(config.sanitized_summary(), sort_keys=True))
     log.warning(
         "Startup ICE summary backend_entries=%s backend_has_turn=%s client_entries=%s client_has_turn=%s",
         len(config.ice_servers),
@@ -930,10 +1185,14 @@ async def on_startup() -> None:
         len(config.client_ice_servers),
         client_turn,
     )
+    for warning in STARTUP_WARNINGS:
+        log.warning("Startup warning: %s", warning)
+    for error in STARTUP_ERRORS:
+        log.error("Startup error: %s", error)
 
     async def _cleanup_loop() -> None:
         while True:
             await sessions.cleanup_idle()
-            await asyncio.sleep(30)
+            await asyncio.sleep(config.cleanup_interval_s)
 
     cleanup_task = asyncio.create_task(_cleanup_loop())

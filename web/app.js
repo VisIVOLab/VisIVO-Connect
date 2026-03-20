@@ -34,6 +34,7 @@ const elements = {
   volumePalettePicker: document.getElementById("volumePalettePicker"),
   volumePaletteButton: document.getElementById("volumePaletteButton"),
   volumePaletteButtonName: document.getElementById("volumePaletteButtonName"),
+  volumePaletteButtonBadges: document.getElementById("volumePaletteButtonBadges"),
   volumePaletteButtonSwatch: document.getElementById("volumePaletteButtonSwatch"),
   volumePaletteMenu: document.getElementById("volumePaletteMenu"),
   volumePaletteSearch: document.getElementById("volumePaletteSearch"),
@@ -246,6 +247,10 @@ const state = {
     pending: false,
     lastSessionId: "",
   },
+  service: {
+    backendVersion: "",
+    frontendBuild: "",
+  },
   touch: {
     rotateSensitivity: 0.45,
     panSensitivity: 0.4,
@@ -296,6 +301,8 @@ const state = {
     forceWsFallback: false,
     fallbackTimer: 0,
     fallbackTimeoutMs: 7000,
+    wsReconnectBaseDelayMs: 1000,
+    wsReconnectMaxDelayMs: 15000,
     wsFallbackRequested: false,
     wsFallbackActive: false,
     wsFrameCount: 0,
@@ -328,6 +335,69 @@ const DEFAULT_WS_URL = "/ws";
     state.transport.forceWsFallback
   );
 }
+
+function applyRuntimeConfig(config) {
+  if (!config || typeof config !== "object") {
+    return;
+  }
+  if (typeof config.backendVersion === "string") {
+    state.service.backendVersion = config.backendVersion;
+  }
+  if (typeof config.frontendBuild === "string") {
+    state.service.frontendBuild = config.frontendBuild;
+  }
+  if (typeof config.relayOnlyDefault === "boolean" && !state.rtc.forceRelayOnly) {
+    state.rtc.forceRelayOnly = config.relayOnlyDefault;
+  }
+  const defaults = config.defaults && typeof config.defaults === "object" ? config.defaults : {};
+  if (Number.isFinite(defaults.targetFps)) {
+    state.renderParams.targetFps = Number(defaults.targetFps);
+  }
+  if (Number.isFinite(defaults.bitrateMbps)) {
+    state.renderParams.bitrate = Number(defaults.bitrateMbps);
+  }
+  if (Number.isFinite(defaults.interactiveDownsample)) {
+    state.quality.interactiveDownsample = Number(defaults.interactiveDownsample);
+  }
+  if (typeof defaults.hqDetailPreset === "string" && defaults.hqDetailPreset.trim()) {
+    state.quality.hqDetailPreset = defaults.hqDetailPreset.trim();
+  }
+  if (Number.isFinite(defaults.wsReconnectBaseDelayMs)) {
+    state.transport.wsReconnectBaseDelayMs = Number(defaults.wsReconnectBaseDelayMs);
+  }
+  if (Number.isFinite(defaults.wsReconnectMaxDelayMs)) {
+    state.transport.wsReconnectMaxDelayMs = Number(defaults.wsReconnectMaxDelayMs);
+  }
+}
+
+async function loadRuntimeConfig() {
+  try {
+    const response = await fetch("/api/runtime-config", { method: "GET", cache: "no-store" });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    applyRuntimeConfig(payload);
+    if (state.service.backendVersion || state.service.frontendBuild) {
+      logEvent(
+        `Build backend=${state.service.backendVersion || "unknown"} frontend=${state.service.frontendBuild || "unknown"}`
+      );
+    }
+  } catch (error) {
+    console.warn("Runtime config fetch failed", error);
+  }
+}
+
+function syncRuntimeDefaultsToUI() {
+  elements.bitrate.value = String(state.renderParams.bitrate);
+  elements.bitrateValue.textContent = formatBitrate(state.renderParams.bitrate);
+  elements.targetFps.value = String(state.renderParams.targetFps);
+  elements.targetFpsValue.textContent = formatFps(state.renderParams.targetFps);
+  elements.interactiveDownsample.value = String(state.quality.interactiveDownsample);
+  elements.interactiveDownsampleValue.textContent = `${state.quality.interactiveDownsample.toFixed(1)}x`;
+  elements.hqDetailPreset.value = state.quality.hqDetailPreset;
+}
+
 elements.sessionId.textContent = state.sessionId;
 elements.renderScaleValue.textContent = formatScale(state.renderParams.scale);
 elements.bitrateValue.textContent = formatBitrate(state.renderParams.bitrate);
@@ -617,15 +687,17 @@ document.addEventListener("fullscreenchange", () => {
 
 window.addEventListener("resize", () => reportResize());
 window.addEventListener("orientationchange", () => reportResize(true));
+window.addEventListener("online", () => {
+  if (state.shouldReconnect && !state.ws && state.wsUrl) {
+    logEvent("Network online, reconnecting");
+    openSocket();
+  }
+});
 
 const resizeObserver = new ResizeObserver(() => reportResize());
 resizeObserver.observe(elements.stageFrame);
 
 installGestureHandlers(elements.gestureLayer);
-
-if (elements.wsUrl.value) {
-  connect(elements.wsUrl.value.trim());
-}
 
 function connect(url) {
   const safeUrl = url && url.trim() ? url.trim() : DEFAULT_WS_URL;
@@ -760,7 +832,10 @@ function disconnect(manual = true) {
 }
 
 function scheduleReconnect() {
-  const delay = Math.min(1000 * 2 ** Math.min(state.reconnectAttempts, 5), 15000);
+  const delay = Math.min(
+    state.transport.wsReconnectBaseDelayMs * 2 ** Math.min(state.reconnectAttempts, 5),
+    state.transport.wsReconnectMaxDelayMs
+  );
   state.reconnectAttempts += 1;
   setConnectionState("reconnecting", "warn", `Retrying in ${Math.round(delay / 1000)}s`);
   clearTimeout(state.reconnectTimer);
@@ -772,7 +847,7 @@ function scheduleReconnect() {
 function handleSocketError(error) {
   console.error(error);
   elements.stageOverlay.classList.remove("hidden");
-  setConnectionState("error", "danger", "Socket error (check /ws URL)");
+  setConnectionState("error", "danger", "Socket error");
   logEvent("WS error");
 }
 
@@ -860,6 +935,9 @@ function handleSocketMessage(raw) {
       break;
     case "error":
       setConnectionState("error", "danger", message.message || "Server error");
+      logEvent(
+        `Server error${message.code ? ` [${message.code}]` : ""}${message.phase ? ` phase=${message.phase}` : ""}${message.retryable ? " retryable" : ""}`
+      );
       break;
     case "pong":
       break;
@@ -2031,9 +2109,7 @@ function palettePreviewColorsFor(name) {
   if (name === state.volume.palette && Array.isArray(state.volume.palettePreviewColors) && state.volume.palettePreviewColors.length > 0) {
     return state.volume.palettePreviewColors;
   }
-  const catalogEntry = Array.isArray(state.volume.paletteCatalog)
-    ? state.volume.paletteCatalog.find((entry) => entry.name === name)
-    : null;
+  const catalogEntry = paletteCatalogEntry(name);
   return catalogEntry && Array.isArray(catalogEntry.previewColors) ? catalogEntry.previewColors : [];
 }
 
@@ -2041,6 +2117,38 @@ function paletteGradient(colors) {
   return colors.length > 0
     ? `linear-gradient(90deg, ${colors.join(", ")})`
     : "linear-gradient(90deg, rgba(0, 0, 0, 0.35), rgba(255, 255, 255, 0.35))";
+}
+
+function paletteCatalogEntry(name) {
+  return Array.isArray(state.volume.paletteCatalog)
+    ? state.volume.paletteCatalog.find((entry) => entry.name === name) || null
+    : null;
+}
+
+function paletteMetadataFor(name) {
+  const entry = paletteCatalogEntry(name);
+  return {
+    hasAlpha: Boolean(entry?.hasAlpha),
+    isDiscrete: Boolean(entry?.isDiscrete),
+  };
+}
+
+function buildPaletteBadgeElements(name) {
+  const metadata = paletteMetadataFor(name);
+  const badges = [];
+  if (metadata.hasAlpha) {
+    const rgbaBadge = document.createElement("span");
+    rgbaBadge.className = "palette-badge palette-badge-rgba";
+    rgbaBadge.textContent = "RGBA";
+    badges.push(rgbaBadge);
+  }
+  if (metadata.isDiscrete) {
+    const discreteBadge = document.createElement("span");
+    discreteBadge.className = "palette-badge palette-badge-discrete";
+    discreteBadge.textContent = "Discrete";
+    badges.push(discreteBadge);
+  }
+  return badges;
 }
 
 function renderPaletteMenu() {
@@ -2074,11 +2182,19 @@ function renderPaletteMenu() {
       label.className = "palette-option-name";
       label.textContent = name;
 
+      const badges = document.createElement("span");
+      badges.className = "palette-option-badges";
+      badges.append(...buildPaletteBadgeElements(name));
+
+      const identity = document.createElement("span");
+      identity.className = "palette-option-identity";
+      identity.append(label, badges);
+
       const swatch = document.createElement("span");
       swatch.className = "palette-option-swatch";
       swatch.style.background = paletteGradient(palettePreviewColorsFor(name));
 
-      option.append(label, swatch);
+      option.append(identity, swatch);
       option.addEventListener("click", () => {
         if (state.volume.palette !== name) {
           state.volume.palette = name;
@@ -2132,6 +2248,8 @@ function mergePaletteCatalog(catalog) {
       previewColors: Array.isArray(entry.previewColors)
         ? entry.previewColors.filter((color) => typeof color === "string" && color.trim())
         : [],
+      hasAlpha: Boolean(entry.hasAlpha),
+      isDiscrete: Boolean(entry.isDiscrete),
     }));
   if (state.volume.paletteCatalog.length > 0) {
     state.volume.availablePalettes = state.volume.paletteCatalog.map((entry) => entry.name);
@@ -2148,6 +2266,7 @@ function syncPalettePreview() {
   const scaleLabel = state.volume.scaleMode === "log" ? "log mapping" : "linear mapping";
   elements.volumePalettePreviewCaption.textContent = `${state.volume.palette} · ${scaleLabel}`;
   elements.volumePaletteButtonName.textContent = state.volume.palette;
+  elements.volumePaletteButtonBadges.replaceChildren(...buildPaletteBadgeElements(state.volume.palette));
   elements.volumePaletteButtonSwatch.style.background = paletteGradient(colors);
 }
 
@@ -2806,3 +2925,14 @@ function appendLog(message) {
     elements.eventLog.lastElementChild?.remove();
   }
 }
+
+async function bootstrapApp() {
+  await loadRuntimeConfig();
+  syncRuntimeDefaultsToUI();
+  syncVolumeControlsToUI();
+  if (elements.wsUrl.value) {
+    connect(elements.wsUrl.value.trim());
+  }
+}
+
+void bootstrapApp();

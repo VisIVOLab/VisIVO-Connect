@@ -304,11 +304,24 @@ input {
   box-shadow: 0 0 0 3px rgba(87, 215, 255, 0.12);
 }
 
+.palette-picker-button-identity {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .palette-picker-button-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.palette-picker-button-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .palette-picker-button-swatch,
@@ -374,11 +387,51 @@ input {
   background: rgba(87, 215, 255, 0.12);
 }
 
+.palette-option-identity {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .palette-option-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.palette-option-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.palette-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(140, 173, 211, 0.18);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #d9e8f8;
+  background: rgba(136, 158, 184, 0.16);
+}
+
+.palette-badge-rgba {
+  border-color: rgba(87, 215, 255, 0.26);
+  background: rgba(87, 215, 255, 0.12);
+  color: #b9f3ff;
+}
+
+.palette-badge-discrete {
+  border-color: rgba(167, 255, 207, 0.24);
+  background: rgba(167, 255, 207, 0.1);
+  color: #d5ffe5;
 }
 
 .overlay-kicker {

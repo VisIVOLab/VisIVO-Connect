@@ -1,0 +1,23 @@
+[Unit]
+Description=VisIVO Connect backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=visivo
+Group=visivo
+WorkingDirectory=/opt/visivo-connect
+EnvironmentFile=/opt/visivo-connect/.env
+ExecStart=/opt/visivo-connect/scripts/run-prod.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/visivo-connect
+
+[Install]
+WantedBy=multi-user.target

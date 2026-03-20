@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from aiortc import RTCPeerConnection
 
 from backend.core.models import FramePacket, RenderStats, VisualizationState
+from backend.core.config import load_config
 from backend.core.observability import (
     FitsImportMetrics,
     SessionRuntimeMetrics,
@@ -29,6 +30,7 @@ class RemoteRenderSession:
     def __init__(self, dataset_path: str | None = None) -> None:
         from backend.rendering.vtk_datacube_renderer import VTKDatacubeRenderer
 
+        config = load_config()
         self.session_id = str(uuid.uuid4())
         self._session_started_ns = time.time_ns()
         self.renderer = VTKDatacubeRenderer(dataset_path=dataset_path)
@@ -57,8 +59,8 @@ class RemoteRenderSession:
         self._renderer_lock = threading.RLock()
         self._closed = False
         self.last_activity_ns = time.time_ns()
-        self.target_stream_fps = 30.0
-        self.target_bitrate_mbps = 14.0
+        self.target_stream_fps = float(config.default_target_fps)
+        self.target_bitrate_mbps = float(config.default_bitrate_mbps)
 
         self.peer_connection: RTCPeerConnection | None = None
         self.control_ws: Any | None = None
@@ -477,6 +479,17 @@ class SessionManager:
     async def get(self, session_id: str) -> RemoteRenderSession | None:
         async with self._lock:
             return self._sessions.get(session_id)
+
+    async def count(self) -> int:
+        async with self._lock:
+            return len(self._sessions)
+
+    async def summary(self) -> dict[str, int]:
+        async with self._lock:
+            return {
+                "activeSessions": len(self._sessions),
+                "maxSessions": self.max_sessions,
+            }
 
     async def get_or_create(self, session_id: str | None, dataset_path: str | None = None) -> RemoteRenderSession:
         if session_id:

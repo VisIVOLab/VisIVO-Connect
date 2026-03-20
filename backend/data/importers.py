@@ -11,6 +11,7 @@ import vtk
 from astropy.io import fits
 from vtk.util import numpy_support
 
+from backend.core.config import load_config
 from backend.core.observability import (
     FitsImportMetrics,
     clear_last_fits_import_metrics,
@@ -21,7 +22,6 @@ from backend.core.observability import (
 _NUMPY_SUFFIXES = {".npy"}
 _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 _FITS_GZIP_SUFFIXES = (".fits.gz", ".fit.gz", ".fts.gz")
-_FITS_CACHE_MAX_ENTRIES = 2
 _fits_cube_cache: dict[tuple[str, int | str | None, int, int], np.ndarray] = {}
 
 
@@ -181,10 +181,14 @@ def _fits_cache_key(path: Path, fits_hdu: int | str | None) -> tuple[str, int | 
 
 
 def _store_fits_cache(cache_key: tuple[str, int | str | None, int, int], cube: np.ndarray) -> None:
+    max_entries = load_config().fits_cache_max_entries
+    if max_entries <= 0:
+        _fits_cube_cache.clear()
+        return
     if cache_key in _fits_cube_cache:
         _fits_cube_cache.pop(cache_key, None)
     _fits_cube_cache[cache_key] = cube
-    while len(_fits_cube_cache) > _FITS_CACHE_MAX_ENTRIES:
+    while len(_fits_cube_cache) > max_entries:
         oldest_key = next(iter(_fits_cube_cache))
         _fits_cube_cache.pop(oldest_key, None)
 

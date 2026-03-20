@@ -111,6 +111,8 @@ export VISIVO_DATACUBE_PATH="$(pwd)/web/data/sample_datacube.npy"  # optional
 # export VISIVO_METRICS_TOKEN="metrics-secret"
 # export VISIVO_MAX_SESSIONS="24"
 # export VISIVO_IDLE_TIMEOUT_S="1200"
+# export VISIVO_ALLOWED_ORIGINS='["https://viewer.example.org"]'
+# export VISIVO_FORCE_RELAY_ONLY="1"
 # export VISIVO_STABILITY_MODE="1"  # recommended on macOS
 # export VISIVO_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.org:3478"],"username":"user","credential":"pass"}]'
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080 --loop asyncio
@@ -178,6 +180,17 @@ Session metrics:
   `renderWindowBackend`, `openGLVendor`, `openGLRenderer`, `openGLVersion`,
   `volumeMapperClass`, `gpuOffscreenAvailable`, `cpuFallbackAvailable`,
   `selectedRenderPath`, `capabilityProfile`, `fallbackReason`
+
+Service endpoints:
+
+- `GET /healthz`
+  - liveness, backend/frontend version, uptime
+- `GET /readyz`
+  - readiness summary, startup warnings/errors, active session count, sanitized config, latest renderer diagnostics if available
+- `GET /api/version`
+  - backend version, frontend build, sanitized config summary
+- `GET /api/runtime-config`
+  - safe frontend defaults (bitrate/FPS/reconnect/HQ preset/relay-only default)
 
 Burst input test:
 
@@ -314,3 +327,102 @@ Implemented now:
   - ICE config parsing
   - session manager eviction/idle cleanup
   - synthetic FITS validation with HDU selection and NaN/Inf sanitization
+
+
+## Production-Oriented Configuration
+
+New centralized env/config surface (see [.env.example](.env.example)):
+
+- service/runtime:
+  - `VISIVO_APP_ENV` = `development|production|test`
+  - `VISIVO_APP_NAME`
+  - `VISIVO_APP_VERSION`
+  - `VISIVO_FRONTEND_BUILD`
+  - `VISIVO_HOST`
+  - `VISIVO_PORT`
+  - `VISIVO_LOG_LEVEL`
+- dataset/security:
+  - `VISIVO_DATACUBE_PATH`
+  - `VISIVO_DATASET_ROOT`
+  - `VISIVO_STRICT_DATASET_PATH`
+  - `VISIVO_FITS_CACHE_MAX_ENTRIES`
+- auth:
+  - `VISIVO_AUTH_TOKEN`
+  - `VISIVO_METRICS_TOKEN`
+- session lifecycle:
+  - `VISIVO_MAX_SESSIONS`
+  - `VISIVO_IDLE_TIMEOUT_S`
+  - `VISIVO_CLEANUP_INTERVAL_S`
+- browser / CORS:
+  - `VISIVO_ALLOWED_ORIGINS`
+- ICE / TURN:
+  - `VISIVO_ICE_SERVERS`
+  - `VISIVO_CLIENT_ICE_SERVERS`
+  - `VISIVO_FORCE_RELAY_ONLY`
+  - `VISIVO_ICE_GATHER_TIMEOUT_MS`
+  - `VISIVO_ICE_GATHER_TIMEOUT_MS_RELAY`
+- frontend defaults:
+  - `VISIVO_DEFAULT_TARGET_FPS`
+  - `VISIVO_DEFAULT_BITRATE_MBPS`
+  - `VISIVO_DEFAULT_INTERACTIVE_DOWNSAMPLE`
+  - `VISIVO_DEFAULT_HQ_DETAIL_PRESET`
+  - `VISIVO_WS_RECONNECT_BASE_DELAY_MS`
+  - `VISIVO_WS_RECONNECT_MAX_DELAY_MS`
+- renderer/runtime passthrough knobs already supported:
+  - `VISIVO_STABILITY_MODE`
+  - `VISIVO_VTK_RENDER_WINDOW`
+  - `VISIVO_SMART_MAPPER_MODE`
+  - `VISIVO_VTK_MAIN_THREAD`
+
+## Production Startup
+
+Use the included assets instead of hand-writing long `uvicorn` commands:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+./scripts/run-prod.sh
+```
+
+Systemd template: [deploy/systemd/visivo-connect.service](deploy/systemd/visivo-connect.service)
+
+Recommended production defaults:
+
+- set `VISIVO_APP_ENV=production`
+- set explicit `VISIVO_ALLOWED_ORIGINS`
+- set `VISIVO_DATASET_ROOT` and keep `VISIVO_STRICT_DATASET_PATH=1`
+- keep TURN credentials only in env / service environment
+- expose `GET /healthz` and `GET /readyz` to your supervisor/load balancer
+
+## Recovery / Error Handling Notes
+
+- websocket sessions now keep the renderer session alive across transient control-plane drops; reconnect with the same `sessionId` can resume until idle cleanup removes the session
+- websocket/server errors are normalized into structured payloads with:
+  - `code`
+  - `message`
+  - `phase`
+  - `retryable`
+- invalid dataset paths, malformed config, unsupported message types, and auth failures now return explicit error codes instead of opaque failures
+
+## Post-Deploy Checks
+
+1. `curl http://HOST:PORT/healthz`
+2. `curl http://HOST:PORT/readyz`
+3. `curl http://HOST:PORT/api/version`
+4. open the client and confirm:
+   - websocket connects
+   - `Logs` shows backend/frontend build line
+   - `Metrics` loads for an active session
+5. for WAN deployments, verify TURN reachability and test `?relayOnly=1`
+
+## Residual Risks / TODO
+
+Still not fully production-complete:
+
+- single-process Python backend, no horizontal scaling or shared session store
+- no full authN/authZ model beyond bearer-style tokens
+- no Prometheus/OpenTelemetry exporter yet
+- no persistent dataset cache beyond in-memory process lifetime
+- no GPU resource scheduler / admission control beyond session count
+- no automated packaging for container-based deploys
+
