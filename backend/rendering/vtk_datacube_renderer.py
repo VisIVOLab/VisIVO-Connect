@@ -877,6 +877,12 @@ class VTKDatacubeRenderer:
         self.volume_opacity_scale = min(max(float(opacity_scale), 0.0), 4.0)
         self._refresh_volume_opacity()
 
+    def _clamp_image_sample_distance(self, value: float, *, profile_name: str | None = None) -> float:
+        profile = profile_name or getattr(self.current_profile, "name", "high-quality")
+        minimum = 1.2 if profile == "interactive" and self.stability_mode else 1.0
+        maximum = 6.0 if profile == "interactive" else 2.0
+        return min(max(float(value), minimum), maximum)
+
     def set_volume_params(self, params: dict[str, Any]) -> None:
         if not isinstance(params, dict):
             return
@@ -894,7 +900,16 @@ class VTKDatacubeRenderer:
         if isinstance(params.get("sampleDistanceScale"), (int, float)):
             self.volume_sample_distance_scale_override = max(0.1, float(params["sampleDistanceScale"]))
         if isinstance(params.get("imageSampleDistance"), (int, float)):
-            self.volume_image_sample_distance_override = max(0.5, min(8.0, float(params["imageSampleDistance"])))
+            requested = float(params["imageSampleDistance"])
+            clamped = self._clamp_image_sample_distance(requested, profile_name=self.current_profile.name)
+            self.volume_image_sample_distance_override = clamped
+            if abs(clamped - requested) > 1e-6:
+                self._log.warning(
+                    "Clamped image sample distance from %.3f to %.3f for profile=%s",
+                    requested,
+                    clamped,
+                    self.current_profile.name,
+                )
         if isinstance(params.get("shade"), bool):
             self.volume_shade_override = bool(params["shade"])
         if isinstance(params.get("sliceAxis"), str):
@@ -1093,9 +1108,10 @@ class VTKDatacubeRenderer:
                 if profile.name == "interactive":
                     image_sample = 1.8 if self._selected_render_path == "gpu" else 2.2
                 else:
-                    image_sample = 0.7 if self._selected_render_path == "gpu" else 1.0
+                    image_sample = 1.0
             if self.stability_mode and profile.name == "interactive":
                 image_sample = max(image_sample, 2.4)
+            image_sample = self._clamp_image_sample_distance(float(image_sample), profile_name=profile.name)
             if hasattr(self.volume_mapper, "SetImageSampleDistance"):
                 self.volume_mapper.SetImageSampleDistance(float(image_sample))
             self.outline_actor.GetProperty().SetOpacity(0.9 if profile.name == "interactive" else 0.35)

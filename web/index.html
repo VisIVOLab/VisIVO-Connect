@@ -255,9 +255,12 @@
 
                     <label class="field compact-field">
                       <span>Image sample distance</span>
-                      <input id="volumeImageSampleDistance" type="range" min="0.5" max="6.0" step="0.1" value="0.7" />
+                      <input id="volumeImageSampleDistance" type="range" min="1.0" max="4.0" step="0.1" value="1.0" />
                       <output id="volumeImageSampleDistanceValue">profile</output>
                     </label>
+                    <div class="field compact-field">
+                      <span>Lower is sharper, but values below 1.0 are disabled to keep framing stable.</span>
+                    </div>
 
                     <label class="check-row">
                       <input id="volumeShade" type="checkbox" checked />

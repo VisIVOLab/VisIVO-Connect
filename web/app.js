@@ -484,7 +484,7 @@ elements.volumeSampleDistanceScale.addEventListener("input", () => {
 });
 
 elements.volumeImageSampleDistance.addEventListener("input", () => {
-  state.volume.imageSampleDistance = Number(elements.volumeImageSampleDistance.value);
+  state.volume.imageSampleDistance = Math.max(1.0, Number(elements.volumeImageSampleDistance.value));
   elements.volumeImageSampleDistanceValue.textContent = formatFloat(state.volume.imageSampleDistance);
   sendRenderParams();
 });
@@ -1962,7 +1962,7 @@ function mergeVolumeParams(incoming) {
     state.volume.sampleDistanceScale = Number(incoming.sampleDistanceScale);
   }
   if (Number.isFinite(incoming.imageSampleDistance)) {
-    state.volume.imageSampleDistance = Number(incoming.imageSampleDistance);
+    state.volume.imageSampleDistance = Math.max(1.0, Number(incoming.imageSampleDistance));
   }
   if (typeof incoming.shade === "boolean") {
     state.volume.shade = incoming.shade;
@@ -2019,13 +2019,13 @@ function applyAutoContrastPreset() {
   if (state.volume.renderMode === "mip") {
     state.volume.opacityScale = 1.0;
     state.volume.sampleDistanceScale = state.renderMode === "interactive" ? 1.4 : 1.0;
-    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 0.9;
+    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 1.0;
     state.volume.shade = false;
   } else {
     state.volume.renderMode = "composite";
     state.volume.opacityScale = 2.3;
     state.volume.sampleDistanceScale = state.renderMode === "interactive" ? 1.15 : 0.8;
-    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 0.7;
+    state.volume.imageSampleDistance = state.renderMode === "interactive" ? 1.6 : 1.0;
     state.volume.shade = true;
   }
 
@@ -2050,9 +2050,9 @@ function defaultVolumeSampleDistanceScale() {
 
 function defaultVolumeImageSampleDistance() {
   if (state.volume.renderMode === "mip") {
-    return state.renderMode === "interactive" ? 1.6 : 0.9;
+    return state.renderMode === "interactive" ? 1.6 : 1.0;
   }
-  return state.renderMode === "interactive" ? 1.8 : 0.7;
+  return state.renderMode === "interactive" ? 1.8 : 1.0;
 }
 
 function effectiveVolumeSampleDistanceScale() {
