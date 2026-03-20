@@ -166,6 +166,7 @@ Palette notes:
 - `scaleMode` supports `linear` and `log`
 - in `log` mode, values `<= 0` are clamped below the first positive sample; this keeps the GPU path stable without invalid log-domain points
 - RGBA palettes from the desktop source keep their RGB transfer faithfully; alpha is not remapped into volume opacity because the desktop `SetColorTransferFunction(...)` helper also transfers RGB only
+- in `slice` mode the same palette and `scaleMode` are reused through a lookup table, so slice and volume stay visually aligned
 
 ## Metrics and Demo Tests
 

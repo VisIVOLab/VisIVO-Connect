@@ -3806,6 +3806,66 @@ def _scalar_positions(scale_mode: str, scalar_range: tuple[float, float], count:
     return (positions, "log", log_lo)
 
 
+def _mapping_metadata(
+    *,
+    name: str,
+    scale_mode: str,
+    effective_mode: str,
+    log_floor: float | None,
+    sample_count: int,
+) -> dict[str, object]:
+    return {
+        "palette": name,
+        "requestedScaleMode": str(scale_mode or "linear"),
+        "effectiveScaleMode": effective_mode,
+        "positiveLogFloor": log_floor,
+        "sampleCount": sample_count,
+        "hasAlpha": _COLOR_MAP_METADATA[name].has_alpha,
+        "kind": _COLOR_MAP_METADATA[name].kind,
+    }
+
+
+def build_lookup_table(name: str, scalar_range: tuple[float, float], *, scale_mode: str = "linear", positive_floor: float | None = None) -> tuple[vtk.vtkLookupTable, dict[str, object]]:
+    samples = get_color_map_samples(name)
+    lo, hi = float(scalar_range[0]), float(scalar_range[1])
+    if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo:
+        lo, hi = 0.0, 1.0
+    _positions, effective_mode, log_floor = _scalar_positions(scale_mode, (lo, hi), len(samples), positive_floor)
+    lut = vtk.vtkLookupTable()
+    lut.SetNumberOfTableValues(len(samples))
+    if effective_mode == "log" and log_floor is not None and hi > log_floor:
+        lut.SetTableRange(log_floor, hi)
+        if hasattr(lut, "SetScaleToLog10"):
+            lut.SetScaleToLog10()
+    else:
+        lut.SetTableRange(lo, hi)
+        if hasattr(lut, "SetScaleToLinear"):
+            lut.SetScaleToLinear()
+    for index, (r, g, b, a) in enumerate(samples):
+        lut.SetTableValue(index, float(r), float(g), float(b), float(a))
+    first = samples[0]
+    last = samples[-1]
+    if hasattr(lut, "SetBelowRangeColor"):
+        lut.SetBelowRangeColor(float(first[0]), float(first[1]), float(first[2]), float(first[3]))
+    if hasattr(lut, "UseBelowRangeColorOn"):
+        lut.UseBelowRangeColorOn()
+    if hasattr(lut, "SetAboveRangeColor"):
+        lut.SetAboveRangeColor(float(last[0]), float(last[1]), float(last[2]), float(last[3]))
+    if hasattr(lut, "UseAboveRangeColorOn"):
+        lut.UseAboveRangeColorOn()
+    if hasattr(lut, "SetNanColor"):
+        lut.SetNanColor(float(first[0]), float(first[1]), float(first[2]), float(first[3]))
+    lut.SetObjectName(name)
+    lut.Build()
+    return lut, _mapping_metadata(
+        name=name,
+        scale_mode=scale_mode,
+        effective_mode=effective_mode,
+        log_floor=log_floor,
+        sample_count=len(samples),
+    )
+
+
 def build_color_transfer_function(name: str, scalar_range: tuple[float, float], *, scale_mode: str = "linear", positive_floor: float | None = None) -> tuple[vtk.vtkColorTransferFunction, dict[str, object]]:
     samples = get_color_map_samples(name)
     ctf = vtk.vtkColorTransferFunction()
@@ -3814,12 +3874,10 @@ def build_color_transfer_function(name: str, scalar_range: tuple[float, float], 
     positions, effective_mode, log_floor = _scalar_positions(scale_mode, scalar_range, len(samples), positive_floor)
     for scalar, (r, g, b, _a) in zip(positions, samples, strict=False):
         ctf.AddRGBPoint(float(scalar), float(r), float(g), float(b))
-    return ctf, {
-        "palette": name,
-        "requestedScaleMode": str(scale_mode or "linear"),
-        "effectiveScaleMode": effective_mode,
-        "positiveLogFloor": log_floor,
-        "sampleCount": len(samples),
-        "hasAlpha": _COLOR_MAP_METADATA[name].has_alpha,
-        "kind": _COLOR_MAP_METADATA[name].kind,
-    }
+    return ctf, _mapping_metadata(
+        name=name,
+        scale_mode=scale_mode,
+        effective_mode=effective_mode,
+        log_floor=log_floor,
+        sample_count=len(samples),
+    )

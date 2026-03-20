@@ -18,6 +18,7 @@ from backend.rendering.isosurface_pipeline import build_isosurface_pipeline
 from backend.rendering.vlva_colormaps import (
     DEFAULT_COLOR_MAP,
     build_color_transfer_function,
+    build_lookup_table,
     get_color_map_catalog,
     get_color_map_names,
 )
@@ -113,6 +114,7 @@ class VTKDatacubeRenderer:
         self.outline_actor = vtk.vtkActor()
         self.slice_mapper = vtk.vtkImageSliceMapper()
         self.slice_actor = vtk.vtkImageSlice()
+        self.slice_color_map = vtk.vtkImageMapToColors()
         self._slice_pipeline_initialized = False
         self._slice_actor_added = False
 
@@ -144,6 +146,15 @@ class VTKDatacubeRenderer:
         self.cropping_bounds_norm = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
 
         self._volume_scalar_range = (0.0, 1.0)
+        self._slice_palette_application: dict[str, Any] = {
+            "palette": DEFAULT_COLOR_MAP,
+            "requestedScaleMode": "linear",
+            "effectiveScaleMode": "linear",
+            "positiveLogFloor": None,
+            "sampleCount": 0,
+            "hasAlpha": False,
+            "kind": "table",
+        }
         self._volume_opacity_points = (
             (0.0, 0.0),
             (0.20, 0.0),
@@ -631,7 +642,10 @@ class VTKDatacubeRenderer:
         }
 
     def _configure_slice_pipeline(self, image_data: vtk.vtkImageData) -> None:
-        self.slice_mapper.SetInputData(image_data)
+        self.slice_color_map.SetInputData(image_data)
+        if hasattr(self.slice_color_map, "PassAlphaToOutputOn"):
+            self.slice_color_map.PassAlphaToOutputOn()
+        self.slice_mapper.SetInputConnection(self.slice_color_map.GetOutputPort())
         self._apply_slice_axis()
         default_slice = self._slice_bounds_for_axis(self.slice_axis)[0]
         self._set_slice_index(default_slice)
@@ -981,6 +995,7 @@ class VTKDatacubeRenderer:
                 "scaleMode": self.volume_scale_mode,
                 "paletteCatalog": get_color_map_catalog(),
                 "paletteApplication": dict(self._volume_palette_application),
+                "slicePaletteApplication": dict(self._slice_palette_application),
                 "stabilityMode": self.stability_mode,
                 "warmupMetrics": self.get_warmup_metrics(),
             }
@@ -1165,16 +1180,21 @@ class VTKDatacubeRenderer:
             self.slice_mapper.SetOrientationToZ()
 
     def _apply_slice_window_level(self) -> None:
-        # Use robust scalar range first to avoid all-black slices with strong outliers.
         lo, hi = self._volume_scalar_range
         if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
             lo, hi = self.get_scalar_range()
         if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
             lo, hi = 0.0, 1.0
-        window = max(hi - lo, 1e-6)
-        level = (hi + lo) * 0.5
-        self.slice_actor.GetProperty().SetColorWindow(float(window))
-        self.slice_actor.GetProperty().SetColorLevel(float(level))
+        positive_floor = self._dataset_positive_floor()
+        lookup_table, palette_application = build_lookup_table(
+            self.volume_palette,
+            (lo, hi),
+            scale_mode=self.volume_scale_mode,
+            positive_floor=positive_floor,
+        )
+        self._slice_palette_application = dict(palette_application)
+        self.slice_color_map.SetLookupTable(lookup_table)
+        self.slice_color_map.Update()
 
     def _slice_bounds_for_axis(self, axis: str) -> tuple[int, int]:
         if self.image_data is None:
