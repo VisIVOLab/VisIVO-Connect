@@ -182,14 +182,26 @@ const state = {
     failedRemoteIce: 0,
     restartTimer: 0,
     lastRestartAtMs: 0,
+    forceRelayOnly: false,
+    statsTimer: 0,
+    lastPairSummary: "",
   },
 };
 
 const DEFAULT_WS_URL = "/ws";
 {
+  const query = new URLSearchParams(window.location.search);
   const initialWsUrl = pickInitialWsUrl();
+  state.rtc.forceRelayOnly = isTruthyQueryParam(query.get("relayOnly"));
   elements.wsUrl.value = initialWsUrl && initialWsUrl.trim() ? initialWsUrl.trim() : DEFAULT_WS_URL;
-  console.info("[VisIVO Connect] bootstrap wsUrl=", elements.wsUrl.value, "location=", window.location.href);
+  console.info(
+    "[VisIVO Connect] bootstrap wsUrl=",
+    elements.wsUrl.value,
+    "location=",
+    window.location.href,
+    "relayOnly=",
+    state.rtc.forceRelayOnly
+  );
 }
 elements.sessionId.textContent = state.sessionId;
 elements.renderScaleValue.textContent = formatScale(state.renderParams.scale);
@@ -630,9 +642,11 @@ function maybeCreatePeerConnection() {
   const iceServers = Array.isArray(state.iceServers) ? state.iceServers : [];
   const pc = new RTCPeerConnection({
     iceServers,
+    iceTransportPolicy: state.rtc.forceRelayOnly ? "relay" : "all",
   });
-  logEvent(`RTC config ICE servers=${iceServers.length}`);
+  logEvent(`RTC config ICE servers=${iceServers.length} relayOnly=${state.rtc.forceRelayOnly ? "on" : "off"}`);
   state.pc = pc;
+  startRtcStatsPolling(pc);
 
   pc.addEventListener("track", (event) => {
     const [stream] = event.streams;
@@ -677,6 +691,9 @@ function maybeCreatePeerConnection() {
       setConnectionState("reconnecting", "warn", "RTC reconnecting");
       scheduleRtcRestart(`rtc-${pc.connectionState}`);
     }
+  });
+  pc.addEventListener("iceconnectionstatechange", () => {
+    logEvent(`RTC ice=${pc.iceConnectionState}`);
   });
 
   pc.addTransceiver("video", { direction: "recvonly" });
@@ -799,6 +816,9 @@ function cleanupPeerConnection() {
     } catch {}
   }
   state.pc = null;
+  clearInterval(state.rtc.statsTimer);
+  state.rtc.statsTimer = 0;
+  state.rtc.lastPairSummary = "";
   state.pendingRemoteIceCandidates = [];
   state.rtc.offerReceivedAtMs = 0;
   state.rtc.connectedAtMs = 0;
@@ -809,6 +829,60 @@ function cleanupPeerConnection() {
   state.videoTrackFound = false;
   elements.remoteVideo.srcObject = null;
   elements.stageOverlay.classList.remove("hidden");
+}
+
+function startRtcStatsPolling(pc) {
+  clearInterval(state.rtc.statsTimer);
+  state.rtc.statsTimer = window.setInterval(() => {
+    if (!state.pc || state.pc !== pc) {
+      return;
+    }
+    logSelectedCandidatePair(state.pc);
+  }, 2000);
+}
+
+async function logSelectedCandidatePair(pc) {
+  if (!pc || typeof pc.getStats !== "function") {
+    return;
+  }
+  try {
+    const stats = await pc.getStats();
+    const pair = findSelectedCandidatePair(stats);
+    if (!pair) {
+      return;
+    }
+    const local = pair.localCandidateId ? stats.get(pair.localCandidateId) : null;
+    const remote = pair.remoteCandidateId ? stats.get(pair.remoteCandidateId) : null;
+    const localType = local?.candidateType || "unknown";
+    const remoteType = remote?.candidateType || "unknown";
+    const protocol = local?.protocol || pair.protocol || "unknown";
+    const summary = `RTC pair ${localType}/${remoteType} ${protocol}`;
+    if (summary !== state.rtc.lastPairSummary) {
+      state.rtc.lastPairSummary = summary;
+      logEvent(summary);
+    }
+  } catch {
+    // ignore stats failures
+  }
+}
+
+function findSelectedCandidatePair(stats) {
+  let selectedId = null;
+  for (const stat of stats.values()) {
+    if (stat.type === "transport" && stat.selectedCandidatePairId) {
+      selectedId = stat.selectedCandidatePairId;
+      break;
+    }
+  }
+  if (selectedId) {
+    return stats.get(selectedId) || null;
+  }
+  for (const stat of stats.values()) {
+    if (stat.type === "candidate-pair" && (stat.selected || stat.nominated || stat.state === "succeeded")) {
+      return stat;
+    }
+  }
+  return null;
 }
 
 function updateIceServersFromSignal(iceServers) {
@@ -1901,6 +1975,14 @@ function pickInitialWsUrl() {
   }
 
   return queryWs || DEFAULT_WS_URL;
+}
+
+function isTruthyQueryParam(value) {
+  if (!value) {
+    return false;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 function logEvent(message) {
