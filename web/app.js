@@ -501,9 +501,6 @@ function openSocket() {
     sendRenderParams();
     reportResize(true);
     startMetricsPolling();
-    if (state.transport.forceWsFallback) {
-      startWsFallback("query-param");
-    }
   });
 
   socket.addEventListener("message", (event) => {

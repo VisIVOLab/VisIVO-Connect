@@ -11,6 +11,7 @@ from typing import Any
 from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceCandidate, RTCIceServer, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 import av
+import numpy as np
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -41,28 +42,23 @@ log = logging.getLogger("uvicorn.error")
 
 
 class _JpegEncoder:
-    def __init__(self) -> None:
-        self._codec: av.CodecContext | None = None
-        self._width = 0
-        self._height = 0
-
-    def _reset(self, width: int, height: int) -> None:
-        self._codec = av.CodecContext.create("mjpeg", "w")
-        self._codec.width = width
-        self._codec.height = height
-        self._codec.pix_fmt = "yuvj420p"
-        self._codec.options = {"q": "5"}
-        self._codec.open()
-        self._width = width
-        self._height = height
-
     def encode(self, frame_bgr: Any) -> bytes:
-        height = int(frame_bgr.shape[0])
-        width = int(frame_bgr.shape[1])
-        if self._codec is None or width != self._width or height != self._height:
-            self._reset(width, height)
-        video_frame = av.VideoFrame.from_ndarray(frame_bgr, format="bgr24")
-        packets = self._codec.encode(video_frame)
+        frame = np.ascontiguousarray(frame_bgr)
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0, 255).astype(np.uint8, copy=False)
+        height = int(frame.shape[0])
+        width = int(frame.shape[1])
+
+        codec = av.CodecContext.create("mjpeg", "w")
+        codec.width = width
+        codec.height = height
+        codec.pix_fmt = "yuvj420p"
+        codec.options = {"q": "5"}
+        codec.open()
+
+        video_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
+        packets = codec.encode(video_frame)
+        packets.extend(codec.encode(None))
         if not packets:
             return b""
         return b"".join(bytes(packet) for packet in packets)
