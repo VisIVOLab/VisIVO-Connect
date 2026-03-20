@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import logging
+import re
 from typing import Any
 
 import numpy as np
@@ -275,12 +276,13 @@ class VTKDatacubeRenderer:
         vendor = ""
         renderer = ""
         version = ""
+        capabilities_report = ""
         probe_error: str | None = None
+        render_probe_succeeded = False
         try:
             self.render_window.Render()
-            vendor = self._safe_window_string("GetOpenGLVendor")
-            renderer = self._safe_window_string("GetOpenGLRenderer")
-            version = self._safe_window_string("GetOpenGLVersion")
+            render_probe_succeeded = True
+            vendor, renderer, version, capabilities_report = self._probe_opengl_context()
         except Exception as exc:  # pragma: no cover - backend-specific probe path
             probe_error = str(exc)
             self._log.warning("Renderer capability probe render failed: %s", exc)
@@ -291,10 +293,28 @@ class VTKDatacubeRenderer:
         use_offscreen_buffers = bool(
             hasattr(self.render_window, "GetUseOffScreenBuffers") and self.render_window.GetUseOffScreenBuffers()
         )
+        supports_opengl = self._safe_window_bool("SupportsOpenGL")
+        direct_rendering = self._safe_window_bool("IsDirect")
         gpu_mapper_available = self.gpu_volume_mapper is not None
         cpu_fallback_available = self.cpu_fallback_mapper is not None
-        opengl_available = any([vendor, renderer, version])
-        gpu_offscreen_available = bool(gpu_mapper_available and offscreen_enabled and opengl_available)
+        backend_implies_opengl = self._render_window_backend in {
+            "vtkEGLRenderWindow",
+            "vtkOSOpenGLRenderWindow",
+            "vtkXOpenGLRenderWindow",
+            "vtkCocoaRenderWindow",
+            "vtkWin32OpenGLRenderWindow",
+        }
+        opengl_available = any([vendor, renderer, version]) or bool(capabilities_report)
+        gpu_context_available = bool(
+            render_probe_succeeded
+            and offscreen_enabled
+            and (
+                opengl_available
+                or supports_opengl is True
+                or backend_implies_opengl
+            )
+        )
+        gpu_offscreen_available = bool(gpu_mapper_available and gpu_context_available)
 
         if gpu_offscreen_available:
             self._switch_active_mapper("gpu")
@@ -312,7 +332,7 @@ class VTKDatacubeRenderer:
                 fallback_reason = "gpu-mapper-unavailable"
             elif not offscreen_enabled:
                 fallback_reason = "offscreen-unavailable"
-            elif not opengl_available:
+            elif not gpu_context_available:
                 fallback_reason = "opengl-unavailable"
             else:
                 fallback_reason = "gpu-offscreen-unavailable"
@@ -324,11 +344,17 @@ class VTKDatacubeRenderer:
             "renderWindowRequest": self._render_window_request,
             "offscreenEnabled": offscreen_enabled,
             "useOffscreenBuffers": use_offscreen_buffers,
+            "renderProbeSucceeded": render_probe_succeeded,
+            "supportsOpenGL": supports_opengl,
+            "directRendering": direct_rendering,
             "openGLVendor": vendor or None,
             "openGLRenderer": renderer or None,
             "openGLVersion": version or None,
+            "openGLReport": capabilities_report or None,
             "openglAvailable": opengl_available,
+            "gpuContextAvailable": gpu_context_available,
             "volumeMapperClass": self.volume_mapper.GetClassName() if self.volume_mapper is not None else None,
+            "activeMapperClass": self.volume_mapper.GetClassName() if self.volume_mapper is not None else None,
             "gpuMapperClass": self.gpu_volume_mapper.GetClassName() if self.gpu_volume_mapper is not None else None,
             "cpuMapperClass": self.cpu_fallback_mapper.GetClassName() if self.cpu_fallback_mapper is not None else None,
             "gpuMapperAvailable": gpu_mapper_available,
@@ -339,11 +365,12 @@ class VTKDatacubeRenderer:
             "fallbackReason": self._fallback_reason,
         }
         self._log.warning(
-            "Renderer capabilities backend=%s vendor=%s renderer=%s version=%s gpuOffscreen=%s cpuFallback=%s profile=%s path=%s mapper=%s fallback=%s",
+            "Renderer capabilities backend=%s vendor=%s renderer=%s version=%s gpuContext=%s gpuOffscreen=%s cpuFallback=%s profile=%s path=%s mapper=%s fallback=%s",
             self._render_window_backend,
             vendor or "unknown",
             renderer or "unknown",
             version or "unknown",
+            gpu_context_available,
             gpu_offscreen_available,
             cpu_fallback_available,
             self._capability_profile_name,
@@ -361,6 +388,60 @@ class VTKDatacubeRenderer:
         except Exception:
             return ""
         return str(value).strip()
+
+    def _safe_window_bool(self, method_name: str) -> bool | None:
+        method = getattr(self.render_window, method_name, None)
+        if not callable(method):
+            return None
+        try:
+            return bool(method())
+        except Exception:
+            return None
+
+    def _probe_opengl_context(self) -> tuple[str, str, str, str]:
+        vendor = self._safe_window_string("GetOpenGLVendor")
+        renderer = self._safe_window_string("GetOpenGLRenderer")
+        version = self._safe_window_string("GetOpenGLVersion")
+        report = self._safe_window_string("ReportCapabilities")
+        if report:
+            parsed_vendor, parsed_renderer, parsed_version = self._parse_opengl_report(report)
+            vendor = vendor or parsed_vendor
+            renderer = renderer or parsed_renderer
+            version = version or parsed_version
+        return vendor, renderer, version, report
+
+    def _parse_opengl_report(self, report: str) -> tuple[str, str, str]:
+        text = report.strip()
+        if not text:
+            return ("", "", "")
+
+        patterns = {
+            "vendor": [
+                r"OpenGL vendor string:\s*(.+)",
+                r"Vendor:\s*(.+)",
+            ],
+            "renderer": [
+                r"OpenGL renderer string:\s*(.+)",
+                r"Renderer:\s*(.+)",
+            ],
+            "version": [
+                r"OpenGL version string:\s*(.+)",
+                r"Version:\s*(.+)",
+            ],
+        }
+
+        def extract(keys: list[str]) -> str:
+            for pattern in keys:
+                match = re.search(pattern, text, flags=re.IGNORECASE)
+                if match:
+                    return match.group(1).strip()
+            return ""
+
+        return (
+            extract(patterns["vendor"]),
+            extract(patterns["renderer"]),
+            extract(patterns["version"]),
+        )
 
     def _configure_slice_pipeline(self, image_data: vtk.vtkImageData) -> None:
         self.slice_mapper.SetInputData(image_data)
@@ -504,7 +585,13 @@ class VTKDatacubeRenderer:
         }
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
-        return dict(self._runtime_capabilities)
+        capabilities = dict(self._runtime_capabilities)
+        capabilities["volumeMapperClass"] = self.volume_mapper.GetClassName() if self.volume_mapper is not None else None
+        capabilities["activeMapperClass"] = self.volume_mapper.GetClassName() if self.volume_mapper is not None else None
+        capabilities["selectedRenderPath"] = self._selected_render_path
+        capabilities["capabilityProfile"] = self._capability_profile_name
+        capabilities["fallbackReason"] = self._fallback_reason
+        return capabilities
 
     def get_renderer_diagnostics(self) -> dict[str, Any]:
         diagnostics = self.get_runtime_capabilities()
@@ -867,6 +954,7 @@ class VTKDatacubeRenderer:
         if self._active_mapper_name == "gpu":
             self._black_frame_streak += 1
             if self._black_frame_streak >= 3:
+                self._fallback_reason = "runtime-gpu-fallback:black-frame"
                 self._switch_active_mapper("smart")
                 self._black_frame_streak = 0
             # Even after GPU fallback attempts, force a visible mode if frames remain dark.
@@ -876,6 +964,7 @@ class VTKDatacubeRenderer:
                 self._apply_slice_window_level()
                 self._apply_visualization_mode()
                 self._dark_frame_streak_total = 0
+                self._fallback_reason = "runtime-visibility-fallback:slice-mode"
                 self._log.warning("Frame remained background-only; forced slice mode for visibility")
             return
 
@@ -888,6 +977,7 @@ class VTKDatacubeRenderer:
             self._apply_visualization_mode()
             self._black_frame_streak_fallback = 0
             self._dark_frame_streak_total = 0
+            self._fallback_reason = "runtime-visibility-fallback:slice-mode"
             self._log.warning("Volume frame remained dark; switched to slice mode fallback")
 
     @property
