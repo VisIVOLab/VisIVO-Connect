@@ -66,6 +66,7 @@ class RemoteRenderSession:
         self.remote_answer_set_ns: int | None = None
         self.ice_relay_only: bool = False
         self.latest_ice_metrics: dict[str, Any] = {}
+        self._warmup_task_started = False
 
         self.request_render()
 
@@ -299,6 +300,12 @@ class RemoteRenderSession:
         if self._latest_frame is not None:
             return
         self.render_if_needed(force=True)
+
+    def maybe_start_warmup_task(self) -> bool:
+        if self._warmup_task_started or self._latest_frame is not None or self._closed:
+            return False
+        self._warmup_task_started = True
+        return True
 
     def latest_frame(self) -> FramePacket | None:
         return self._latest_frame

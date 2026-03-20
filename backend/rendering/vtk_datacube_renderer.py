@@ -5,6 +5,7 @@ import sys
 import time
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,9 @@ from vtk.util import numpy_support
 from backend.core.models import HIGH_QUALITY_PROFILE, INTERACTIVE_PROFILE, QualityProfile
 from backend.data import load_image_data
 from backend.rendering.isosurface_pipeline import build_isosurface_pipeline
+
+_SCALAR_SUMMARY_CACHE_MAX_ENTRIES = 4
+_scalar_summary_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
 
 
 class VTKDatacubeRenderer:
@@ -63,7 +67,10 @@ class VTKDatacubeRenderer:
             "capabilityProbeAfterRenderMs": None,
             "firstVisibleRenderWarmupMs": None,
             "totalRendererWarmupMs": 0.0,
+            "scalarSummaryCacheHit": False,
+            "scalarSummarySampleCount": 0.0,
         }
+        self._dataset_scalar_summary: dict[str, Any] | None = None
 
         self.renderer = vtk.vtkRenderer()
         render_window_started_ns = time.time_ns()
@@ -231,6 +238,24 @@ class VTKDatacubeRenderer:
             if scalars is None:
                 self._log.warning("Loaded image data has no scalars")
                 return
+            cache_key = self._scalar_summary_cache_key()
+            if cache_key is not None and cache_key in _scalar_summary_cache:
+                summary = dict(_scalar_summary_cache[cache_key])
+                self._dataset_scalar_summary = summary
+                self._warmup_metrics["scalarSummaryCacheHit"] = True
+                self._warmup_metrics["scalarSummarySampleCount"] = float(summary.get("sampleCount", 0))
+                self._log.info(
+                    "Dataset summary dims=%s finite=%d min=%.6g max=%.6g p01=%.6g p50=%.6g p99=%.6g nonZero=%.2f%% (cache)",
+                    summary["dims"],
+                    int(summary["finiteCount"]),
+                    float(summary["min"]),
+                    float(summary["max"]),
+                    float(summary["p01"]),
+                    float(summary["p50"]),
+                    float(summary["p99"]),
+                    float(summary["nonZeroRatio"]) * 100.0,
+                )
+                return
             values = numpy_support.vtk_to_numpy(scalars)
             if values.size == 0:
                 self._log.warning("Loaded image data has empty scalar array")
@@ -239,18 +264,34 @@ class VTKDatacubeRenderer:
             if finite.size == 0:
                 self._log.warning("Loaded image data has no finite values")
                 return
-            if finite.size > 262_144:
-                stride = max(finite.size // 262_144, 1)
+            if finite.size > 65_536:
+                stride = max(finite.size // 65_536, 1)
                 finite = finite[::stride]
             p01, p50, p99 = np.percentile(finite, [1.0, 50.0, 99.0]).astype(float)
             non_zero_ratio = float(np.count_nonzero(np.abs(finite) > 0.0) / finite.size)
             dims = image_data.GetDimensions()
+            summary = {
+                "dims": dims,
+                "finiteCount": int(finite.size),
+                "min": float(finite.min()),
+                "max": float(finite.max()),
+                "p01": float(p01),
+                "p50": float(p50),
+                "p99": float(p99),
+                "nonZeroRatio": non_zero_ratio,
+                "sampleCount": int(finite.size),
+            }
+            self._dataset_scalar_summary = summary
+            self._warmup_metrics["scalarSummaryCacheHit"] = False
+            self._warmup_metrics["scalarSummarySampleCount"] = float(finite.size)
+            if cache_key is not None:
+                self._store_scalar_summary_cache(cache_key, summary)
             self._log.info(
                 "Dataset summary dims=%s finite=%d min=%.6g max=%.6g p01=%.6g p50=%.6g p99=%.6g nonZero=%.2f%%",
                 dims,
-                int(finite.size),
-                float(finite.min()),
-                float(finite.max()),
+                int(summary["finiteCount"]),
+                float(summary["min"]),
+                float(summary["max"]),
                 p01,
                 p50,
                 p99,
@@ -258,6 +299,24 @@ class VTKDatacubeRenderer:
             )
         except Exception:  # pragma: no cover - diagnostic only
             self._log.exception("Failed to compute dataset scalar summary")
+
+    def _scalar_summary_cache_key(self) -> tuple[str, int, int] | None:
+        if not self.dataset_path:
+            return None
+        try:
+            path = Path(self.dataset_path.split("#", 1)[0]).resolve()
+            stat = path.stat()
+        except Exception:
+            return None
+        return (str(path), int(stat.st_mtime_ns), int(stat.st_size))
+
+    def _store_scalar_summary_cache(self, cache_key: tuple[str, int, int], summary: dict[str, Any]) -> None:
+        if cache_key in _scalar_summary_cache:
+            _scalar_summary_cache.pop(cache_key, None)
+        _scalar_summary_cache[cache_key] = dict(summary)
+        while len(_scalar_summary_cache) > _SCALAR_SUMMARY_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(_scalar_summary_cache))
+            _scalar_summary_cache.pop(oldest_key, None)
 
     def _configure_volume_pipeline(self, image_data: vtk.vtkImageData) -> None:
         if self.gpu_volume_mapper is not None:
@@ -647,6 +706,12 @@ class VTKDatacubeRenderer:
         if finite.size == 0:
             scalar_range = image_data.GetScalarRange()
             return float(scalar_range[0]), float(scalar_range[1])
+
+        if self._dataset_scalar_summary is not None:
+            lo = float(self._dataset_scalar_summary.get("p01", 0.0))
+            hi = float(self._dataset_scalar_summary.get("p99", 1.0))
+            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                return lo, hi
 
         max_samples = 262_144
         if finite.size > max_samples:

@@ -542,6 +542,14 @@ async def _ws_stream_loop(
         log.exception("WS fallback stream loop failed session=%s", session.session_id)
 
 
+async def _prime_session_frame(session: RemoteRenderSession) -> None:
+    await asyncio.sleep(0)
+    try:
+        session.prime_first_frame()
+    except Exception:
+        log.exception("Session background warmup failed session=%s", session.session_id)
+
+
 @app.get("/")
 async def index() -> Response:
     if not WEB_DIR.exists():
@@ -675,7 +683,6 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     height=int(viewport.get("height", 720)),
                     dpr=float(viewport.get("dpr", 1.0)),
                 )
-                session.prime_first_frame()
                 if not force_ws_fallback:
                     await _attach_peer_connection(session, ws, relay_only=force_relay_only)
                 else:
@@ -691,6 +698,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 await ws.send_json({"type": "stream-ready", "sessionId": session.session_id})
                 session.mark_stream_ready_sent()
                 await _emit_state(ws, session, text="Session connected")
+                if session.maybe_start_warmup_task():
+                    asyncio.create_task(_prime_session_frame(session))
                 continue
 
             if session is None:

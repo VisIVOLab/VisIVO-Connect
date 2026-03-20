@@ -84,6 +84,8 @@ const elements = {
   metricsWarmupRenderWindow: document.getElementById("metricsWarmupRenderWindow"),
   metricsWarmupDatasetLoad: document.getElementById("metricsWarmupDatasetLoad"),
   metricsWarmupScalarSummary: document.getElementById("metricsWarmupScalarSummary"),
+  metricsWarmupScalarSummaryCacheHit: document.getElementById("metricsWarmupScalarSummaryCacheHit"),
+  metricsWarmupScalarSummarySampleCount: document.getElementById("metricsWarmupScalarSummarySampleCount"),
   metricsWarmupVolumePipeline: document.getElementById("metricsWarmupVolumePipeline"),
   metricsWarmupOutline: document.getElementById("metricsWarmupOutline"),
   metricsWarmupSlice: document.getElementById("metricsWarmupSlice"),
@@ -2174,6 +2176,8 @@ function renderMetrics(payload) {
   setText(elements.metricsWarmupRenderWindow, formatMs(warmup.renderWindowCreationMs));
   setText(elements.metricsWarmupDatasetLoad, formatMs(warmup.datasetLoadMs));
   setText(elements.metricsWarmupScalarSummary, formatMs(warmup.scalarSummaryMs));
+  setText(elements.metricsWarmupScalarSummaryCacheHit, formatBoolean(warmup.scalarSummaryCacheHit));
+  setText(elements.metricsWarmupScalarSummarySampleCount, formatInteger(warmup.scalarSummarySampleCount));
   setText(elements.metricsWarmupVolumePipeline, formatMs(warmup.volumePipelineInitMs));
   setText(elements.metricsWarmupOutline, formatMs(warmup.outlinePipelineInitMs));
   setText(elements.metricsWarmupSlice, formatMs(warmup.slicePipelineInitMs));
