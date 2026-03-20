@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <link rel="icon" href="data:," />
+    <link rel="icon" type="image/svg+xml" href="/web/assets/visivo_logo_color.svg" />
     <title>VisIVO Connect</title>
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
@@ -12,7 +12,9 @@
     <div class="app-shell" id="appShell">
       <header class="topbar">
         <div class="brand">
-          <div class="brand-mark">V</div>
+          <div class="brand-mark" aria-hidden="true">
+            <img src="/web/assets/visivo_logo_color.svg" alt="" />
+          </div>
           <div>
             <div class="brand-title">VisIVO Connect</div>
             <div class="brand-subtitle">VisIVO Connect WebRTC viewer with WebSocket control plane</div>
@@ -42,6 +44,7 @@
 
             <div class="stage-overlay" id="stageOverlay">
               <div class="overlay-card">
+                <img class="overlay-logo" src="/web/assets/visivo_logo_color.svg" alt="VisIVO Connect" />
                 <div class="overlay-kicker">Touch-first remote viewing</div>
                 <div class="overlay-title">Connect a stream, then drag, pinch, or wheel to drive the camera.</div>
                 <div class="overlay-copy">Optimized for Android tablets and large wall displays. Fullscreen is supported.</div>
