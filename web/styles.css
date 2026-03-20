@@ -617,23 +617,33 @@ input {
   font-size: 0.82rem;
 }
 
-.dataset-browser {
+.dataset-browser,
+.dataset-summary {
   padding: 14px;
   border-radius: 18px;
   background: rgba(8, 14, 22, 0.48);
   border: 1px solid rgba(140, 173, 211, 0.1);
+  min-width: 0;
 }
 
 .dataset-summary-name {
   font-size: 0.95rem;
   font-weight: 700;
   line-height: 1.35;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .dataset-summary-path {
   color: var(--muted);
   font-size: 0.82rem;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
   word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .dataset-browser-meta {
@@ -657,6 +667,26 @@ input {
   min-height: 20px;
   color: var(--muted);
   font-size: 0.84rem;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.dataset-summary .field-row {
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.dataset-summary .field-row > span {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.dataset-summary .compact-button {
+  flex: 0 0 auto;
 }
 
 .dataset-browser-status[data-tone="danger"] {
@@ -788,10 +818,15 @@ input {
   padding: 20px 22px 22px;
 }
 
+.app-modal-dialog-wide .app-modal-body {
+  overflow: hidden;
+}
+
 .dataset-modal-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
   gap: 18px;
+  min-height: 0;
 }
 
 .dataset-modal-pane {
@@ -804,6 +839,34 @@ input {
 .dataset-details-pane {
   padding-left: 16px;
   border-left: 1px solid rgba(140, 173, 211, 0.1);
+  min-height: 0;
+  min-width: 0;
+}
+
+.dataset-details-shell {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.dataset-details-body {
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding-right: 6px;
+}
+
+.dataset-details-footer {
+  flex: 0 0 auto;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(140, 173, 211, 0.12);
+  background: linear-gradient(180deg, rgba(14, 23, 36, 0), rgba(14, 23, 36, 0.96) 24%);
 }
 
 .dataset-breadcrumb {
@@ -835,33 +898,48 @@ input {
   border: 1px dashed rgba(140, 173, 211, 0.12);
   color: var(--muted);
   font-size: 0.9rem;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .dataset-details {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .dataset-details-title {
   font-size: 1rem;
   font-weight: 700;
   line-height: 1.3;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .dataset-details-path {
   color: var(--muted);
   font-size: 0.82rem;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
   word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .dataset-details-section {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .dataset-details-list {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .dataset-details-item {
@@ -869,6 +947,7 @@ input {
   border-radius: 14px;
   background: rgba(6, 12, 20, 0.56);
   border: 1px solid rgba(140, 173, 211, 0.1);
+  min-width: 0;
 }
 
 .dataset-details-item[role="button"] {
@@ -892,12 +971,37 @@ input {
 .dataset-details-item-title {
   font-size: 0.88rem;
   font-weight: 700;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .dataset-details-item-meta {
   margin-top: 4px;
   color: var(--muted);
   font-size: 0.78rem;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.dataset-details .metric-row {
+  grid-template-columns: minmax(92px, 120px) minmax(0, 1fr);
+  align-items: start;
+}
+
+.dataset-details .metric-label,
+.dataset-details .metric-value {
+  min-width: 0;
+}
+
+.dataset-details .metric-value {
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .dataset-loading-file {

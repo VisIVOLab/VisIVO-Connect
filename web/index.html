@@ -812,43 +812,49 @@
             <div class="dataset-browser-list dataset-browser-list-modal" id="datasetBrowserList" role="list" aria-label="Dataset browser"></div>
           </section>
           <section class="dataset-modal-pane dataset-details-pane">
-            <div class="overlay-kicker">Selection</div>
-            <div class="dataset-details-empty" id="datasetDetailsEmpty">Select a FITS file to inspect its details.</div>
-            <div class="dataset-details hidden" id="datasetDetailsPanel">
-              <div class="dataset-details-title" id="datasetDetailsName">-</div>
-              <div class="dataset-details-path" id="datasetDetailsPath">-</div>
-              <div class="metrics-grid">
-                <div class="metric-row"><span class="metric-label">Size</span><span class="metric-value" id="datasetDetailsSize">-</span></div>
-                <div class="metric-row"><span class="metric-label">Modified</span><span class="metric-value" id="datasetDetailsModified">-</span></div>
-                <div class="metric-row"><span class="metric-label">Supported</span><span class="metric-value" id="datasetDetailsSupported">-</span></div>
-                <div class="metric-row"><span class="metric-label">HDU count</span><span class="metric-value" id="datasetDetailsHduCount">-</span></div>
-              </div>
-              <div class="dataset-details-section hidden" id="datasetHduSelectionSection">
-                <div class="overlay-kicker">HDU selection</div>
-                <label class="control-group">
-                  <span>Selected HDU</span>
-                  <select id="datasetHduSelect"></select>
-                </label>
-              </div>
-              <div class="dataset-details-section hidden" id="datasetHduSelectedSummarySection">
-                <div class="overlay-kicker">Selected HDU</div>
-                <div class="dataset-details-item">
-                  <div class="dataset-details-item-title" id="datasetHduSelectedTitle">-</div>
-                  <div class="dataset-details-item-meta" id="datasetHduSelectedMeta">-</div>
+            <div class="dataset-details-shell">
+              <div class="dataset-details-body">
+                <div class="overlay-kicker">Selection</div>
+                <div class="dataset-details-empty" id="datasetDetailsEmpty">Select a FITS file to inspect its details.</div>
+                <div class="dataset-details hidden" id="datasetDetailsPanel">
+                  <div class="dataset-details-title" id="datasetDetailsName">-</div>
+                  <div class="dataset-details-path" id="datasetDetailsPath">-</div>
+                  <div class="metrics-grid">
+                    <div class="metric-row"><span class="metric-label">Size</span><span class="metric-value" id="datasetDetailsSize">-</span></div>
+                    <div class="metric-row"><span class="metric-label">Modified</span><span class="metric-value" id="datasetDetailsModified">-</span></div>
+                    <div class="metric-row"><span class="metric-label">Supported</span><span class="metric-value" id="datasetDetailsSupported">-</span></div>
+                    <div class="metric-row"><span class="metric-label">HDU count</span><span class="metric-value" id="datasetDetailsHduCount">-</span></div>
+                  </div>
+                  <div class="dataset-details-section hidden" id="datasetHduSelectionSection">
+                    <div class="overlay-kicker">HDU selection</div>
+                    <label class="control-group">
+                      <span>Selected HDU</span>
+                      <select id="datasetHduSelect"></select>
+                    </label>
+                  </div>
+                  <div class="dataset-details-section hidden" id="datasetHduSelectedSummarySection">
+                    <div class="overlay-kicker">Selected HDU</div>
+                    <div class="dataset-details-item">
+                      <div class="dataset-details-item-title" id="datasetHduSelectedTitle">-</div>
+                      <div class="dataset-details-item-meta" id="datasetHduSelectedMeta">-</div>
+                    </div>
+                  </div>
+                  <div class="dataset-details-section">
+                    <div class="overlay-kicker">HDU summary</div>
+                    <div class="dataset-details-list" id="datasetDetailsHdus"></div>
+                  </div>
+                  <div class="dataset-details-section">
+                    <div class="overlay-kicker">Header preview</div>
+                    <div class="dataset-details-list" id="datasetDetailsHeader"></div>
+                  </div>
                 </div>
               </div>
-              <div class="dataset-details-section">
-                <div class="overlay-kicker">HDU summary</div>
-                <div class="dataset-details-list" id="datasetDetailsHdus"></div>
+              <div class="dataset-details-footer">
+                <div class="button-row">
+                  <button class="primary-button" id="datasetOpenSelectedButton" type="button" disabled>Open selected dataset</button>
+                  <button class="ghost-button" id="datasetCancelButton" type="button">Cancel</button>
+                </div>
               </div>
-              <div class="dataset-details-section">
-                <div class="overlay-kicker">Header preview</div>
-                <div class="dataset-details-list" id="datasetDetailsHeader"></div>
-              </div>
-            </div>
-            <div class="button-row">
-              <button class="primary-button" id="datasetOpenSelectedButton" type="button" disabled>Open selected dataset</button>
-              <button class="ghost-button" id="datasetCancelButton" type="button">Cancel</button>
             </div>
           </section>
         </div>
