@@ -299,6 +299,8 @@ class RemoteRenderSession:
     def prime_first_frame(self) -> None:
         if self._latest_frame is not None:
             return
+        with self._renderer_lock:
+            self.renderer.prewarm_volume_renderer()
         self.render_if_needed(force=True)
 
     def maybe_start_warmup_task(self) -> bool:

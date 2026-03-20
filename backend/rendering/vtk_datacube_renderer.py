@@ -66,11 +66,16 @@ class VTKDatacubeRenderer:
             "capabilityProbeDeferred": True,
             "capabilityProbeAfterRenderMs": None,
             "firstVisibleRenderWarmupMs": None,
+            "hiddenVolumePrewarmDeferred": True,
+            "hiddenVolumePrewarmMs": None,
+            "hiddenVolumePrewarmWidth": None,
+            "hiddenVolumePrewarmHeight": None,
             "totalRendererWarmupMs": 0.0,
             "scalarSummaryCacheHit": False,
             "scalarSummarySampleCount": 0.0,
         }
         self._dataset_scalar_summary: dict[str, Any] | None = None
+        self._gpu_volume_prewarmed = False
 
         self.renderer = vtk.vtkRenderer()
         render_window_started_ns = time.time_ns()
@@ -798,6 +803,41 @@ class VTKDatacubeRenderer:
 
     def get_warmup_metrics(self) -> dict[str, Any]:
         return dict(self._warmup_metrics)
+
+    def prewarm_volume_renderer(self) -> None:
+        if self._gpu_volume_prewarmed or self.visualization_mode != "volume":
+            return
+        if self._active_mapper_name != "gpu":
+            return
+        original_width = self.window_width
+        original_height = self.window_height
+        try:
+            target_width = max(128, min(320, original_width))
+            target_height = max(128, min(180, original_height))
+            target_width = target_width if target_width % 2 == 0 else target_width - 1
+            target_height = target_height if target_height % 2 == 0 else target_height - 1
+            self.window_width = target_width
+            self.window_height = target_height
+            self.render_window.SetSize(target_width, target_height)
+            started_ns = time.time_ns()
+            self.render_window.Render()
+            self._finalize_runtime_capabilities_after_render()
+            elapsed_ms = (time.time_ns() - started_ns) / 1e6
+            self._warmup_metrics["hiddenVolumePrewarmDeferred"] = False
+            self._warmup_metrics["hiddenVolumePrewarmMs"] = elapsed_ms
+            self._warmup_metrics["hiddenVolumePrewarmWidth"] = target_width
+            self._warmup_metrics["hiddenVolumePrewarmHeight"] = target_height
+            self._gpu_volume_prewarmed = True
+            self._log.warning(
+                "Hidden volume GPU prewarm completed in %.2fms at %sx%s",
+                elapsed_ms,
+                target_width,
+                target_height,
+            )
+        finally:
+            self.window_width = original_width
+            self.window_height = original_height
+            self.render_window.SetSize(original_width, original_height)
 
     def get_renderer_diagnostics(self) -> dict[str, Any]:
         diagnostics = self.get_runtime_capabilities()

@@ -101,6 +101,8 @@ const elements = {
   metricsWarmupProbeDeferred: document.getElementById("metricsWarmupProbeDeferred"),
   metricsWarmupProbeAfterRender: document.getElementById("metricsWarmupProbeAfterRender"),
   metricsWarmupFirstVisibleRender: document.getElementById("metricsWarmupFirstVisibleRender"),
+  metricsWarmupHiddenPrewarm: document.getElementById("metricsWarmupHiddenPrewarm"),
+  metricsWarmupHiddenPrewarmSize: document.getElementById("metricsWarmupHiddenPrewarmSize"),
   metricsWarmupTotal: document.getElementById("metricsWarmupTotal"),
   metricsActiveMapperClass: document.getElementById("metricsActiveMapperClass"),
   metricsRequestedMapperClass: document.getElementById("metricsRequestedMapperClass"),
@@ -2193,6 +2195,13 @@ function renderMetrics(payload) {
   setText(elements.metricsWarmupProbeDeferred, formatBoolean(warmup.capabilityProbeDeferred));
   setText(elements.metricsWarmupProbeAfterRender, formatMs(warmup.capabilityProbeAfterRenderMs));
   setText(elements.metricsWarmupFirstVisibleRender, formatMs(warmup.firstVisibleRenderWarmupMs));
+  setText(elements.metricsWarmupHiddenPrewarm, formatMs(warmup.hiddenVolumePrewarmMs));
+  setText(
+    elements.metricsWarmupHiddenPrewarmSize,
+    Number.isFinite(warmup.hiddenVolumePrewarmWidth) && Number.isFinite(warmup.hiddenVolumePrewarmHeight)
+      ? `${formatInteger(warmup.hiddenVolumePrewarmWidth)}x${formatInteger(warmup.hiddenVolumePrewarmHeight)}`
+      : "-"
+  );
   setText(elements.metricsWarmupTotal, formatMs(warmup.totalRendererWarmupMs));
   setText(elements.metricsActiveMapperClass, pipeline.activeMapperClass || renderer.activeMapperClass || "-");
   setText(elements.metricsRequestedMapperClass, pipeline.requestedMapperClass || renderer.requestedMapperClass || "-");
