@@ -42,9 +42,28 @@ class VTKDatacubeRenderer:
         self._selected_render_path = "cpu"
         self._fallback_reason: str | None = None
         self._runtime_capabilities: dict[str, Any] = {}
+        self._runtime_probe_pending = True
+        self._warmup_metrics: dict[str, float | bool | None] = {
+            "renderWindowCreationMs": 0.0,
+            "datasetLoadMs": 0.0,
+            "scalarSummaryMs": 0.0,
+            "volumePipelineInitMs": 0.0,
+            "outlinePipelineInitMs": 0.0,
+            "slicePipelineInitMs": 0.0,
+            "isosurfacePipelineInitMs": 0.0,
+            "scenePropAttachMs": 0.0,
+            "cameraResetMs": 0.0,
+            "capabilityDetectionMs": 0.0,
+            "capabilityProbeDeferred": True,
+            "capabilityProbeAfterRenderMs": None,
+            "firstVisibleRenderWarmupMs": None,
+            "totalRendererWarmupMs": 0.0,
+        }
 
         self.renderer = vtk.vtkRenderer()
+        render_window_started_ns = time.time_ns()
         self.render_window = self._create_render_window()
+        self._warmup_metrics["renderWindowCreationMs"] = (time.time_ns() - render_window_started_ns) / 1e6
         self.render_window.SetOffScreenRendering(1)
         if hasattr(self.render_window, "SetUseOffScreenBuffers"):
             self.render_window.SetUseOffScreenBuffers(1)
@@ -103,8 +122,11 @@ class VTKDatacubeRenderer:
             (1.0, 0.90),
         )
 
+        warmup_started_ns = time.time_ns()
         self._configure_scene()
-        self._detect_runtime_capabilities()
+        capability_started_ns = time.time_ns()
+        self._detect_runtime_capabilities(render_probe=False)
+        self._warmup_metrics["capabilityDetectionMs"] = (time.time_ns() - capability_started_ns) / 1e6
         self.current_profile: QualityProfile = (
             HIGH_QUALITY_PROFILE if self._capability_profile_name == "gpu-high" else INTERACTIVE_PROFILE
         )
@@ -112,6 +134,7 @@ class VTKDatacubeRenderer:
         self.interactive_boost = 1.0
         self.set_profile(self.current_profile)
         self.set_visualization_mode("volume")
+        self._warmup_metrics["totalRendererWarmupMs"] = (time.time_ns() - warmup_started_ns) / 1e6
         self._log.warning(
             "Renderer initialized backend=%s request=%s path=%s profile=%s mapper=%s mode=%s",
             self._render_window_backend,
@@ -172,20 +195,36 @@ class VTKDatacubeRenderer:
         return load_image_data(self.dataset_path)
 
     def _configure_scene(self) -> None:
+        dataset_started_ns = time.time_ns()
         self.image_data = self._load_image_data()
+        self._warmup_metrics["datasetLoadMs"] = (time.time_ns() - dataset_started_ns) / 1e6
+        scalar_summary_started_ns = time.time_ns()
         self._log_scalar_summary(self.image_data)
+        self._warmup_metrics["scalarSummaryMs"] = (time.time_ns() - scalar_summary_started_ns) / 1e6
+        volume_started_ns = time.time_ns()
         self._configure_volume_pipeline(self.image_data)
+        self._warmup_metrics["volumePipelineInitMs"] = (time.time_ns() - volume_started_ns) / 1e6
+        outline_started_ns = time.time_ns()
         self._configure_outline(self.image_data)
+        self._warmup_metrics["outlinePipelineInitMs"] = (time.time_ns() - outline_started_ns) / 1e6
+        slice_started_ns = time.time_ns()
         self._configure_slice_pipeline(self.image_data)
+        self._warmup_metrics["slicePipelineInitMs"] = (time.time_ns() - slice_started_ns) / 1e6
+        isosurface_started_ns = time.time_ns()
         self._configure_isosurface_pipeline(self.image_data)
+        self._warmup_metrics["isosurfacePipelineInitMs"] = (time.time_ns() - isosurface_started_ns) / 1e6
 
+        attach_started_ns = time.time_ns()
         self.renderer.AddVolume(self.volume)
         self.renderer.AddActor(self.outline_actor)
         self.renderer.AddViewProp(self.slice_actor)
         if self.isosurface_pipeline is not None:
             self.renderer.AddActor(self.isosurface_pipeline.actor)
         self.renderer.SetBackground(0.03, 0.04, 0.06)
+        self._warmup_metrics["scenePropAttachMs"] = (time.time_ns() - attach_started_ns) / 1e6
+        camera_started_ns = time.time_ns()
         self.renderer.ResetCamera()
+        self._warmup_metrics["cameraResetMs"] = (time.time_ns() - camera_started_ns) / 1e6
 
     def _log_scalar_summary(self, image_data: vtk.vtkImageData) -> None:
         try:
@@ -201,6 +240,9 @@ class VTKDatacubeRenderer:
             if finite.size == 0:
                 self._log.warning("Loaded image data has no finite values")
                 return
+            if finite.size > 262_144:
+                stride = max(finite.size // 262_144, 1)
+                finite = finite[::stride]
             p01, p50, p99 = np.percentile(finite, [1.0, 50.0, 99.0]).astype(float)
             non_zero_ratio = float(np.count_nonzero(np.abs(finite) > 0.0) / finite.size)
             dims = image_data.GetDimensions()
@@ -272,20 +314,21 @@ class VTKDatacubeRenderer:
             self.set_profile(self.current_profile)
         self._log.warning("Switched volume mapper to %s", mapper_name)
 
-    def _detect_runtime_capabilities(self) -> None:
+    def _detect_runtime_capabilities(self, *, render_probe: bool) -> None:
         vendor = ""
         renderer = ""
         version = ""
         capabilities_report = ""
         probe_error: str | None = None
         render_probe_succeeded = False
-        try:
-            self.render_window.Render()
-            render_probe_succeeded = True
-            vendor, renderer, version, capabilities_report = self._probe_opengl_context()
-        except Exception as exc:  # pragma: no cover - backend-specific probe path
-            probe_error = str(exc)
-            self._log.warning("Renderer capability probe render failed: %s", exc)
+        if render_probe:
+            try:
+                self.render_window.Render()
+                render_probe_succeeded = True
+                vendor, renderer, version, capabilities_report = self._probe_opengl_context()
+            except Exception as exc:  # pragma: no cover - backend-specific probe path
+                probe_error = str(exc)
+                self._log.warning("Renderer capability probe render failed: %s", exc)
 
         offscreen_enabled = bool(
             hasattr(self.render_window, "GetOffScreenRendering") and self.render_window.GetOffScreenRendering()
@@ -304,10 +347,9 @@ class VTKDatacubeRenderer:
             "vtkCocoaRenderWindow",
             "vtkWin32OpenGLRenderWindow",
         }
-        opengl_available = any([vendor, renderer, version]) or bool(capabilities_report)
+        opengl_available = any([vendor, renderer, version]) or bool(capabilities_report) or backend_implies_opengl
         gpu_context_available = bool(
-            render_probe_succeeded
-            and offscreen_enabled
+            offscreen_enabled
             and (
                 opengl_available
                 or supports_opengl is True
@@ -363,6 +405,7 @@ class VTKDatacubeRenderer:
             "selectedRenderPath": self._selected_render_path,
             "capabilityProfile": self._capability_profile_name,
             "fallbackReason": self._fallback_reason,
+            "runtimeProbePending": self._runtime_probe_pending,
         }
         self._log.warning(
             "Renderer capabilities backend=%s vendor=%s renderer=%s version=%s gpuContext=%s gpuOffscreen=%s cpuFallback=%s profile=%s path=%s mapper=%s fallback=%s",
@@ -378,6 +421,30 @@ class VTKDatacubeRenderer:
             self._runtime_capabilities["volumeMapperClass"] or "unknown",
             self._fallback_reason or "none",
         )
+
+    def _finalize_runtime_capabilities_after_render(self) -> None:
+        if not self._runtime_probe_pending:
+            return
+        probe_started_ns = time.time_ns()
+        vendor, renderer, version, capabilities_report = self._probe_opengl_context()
+        self._runtime_probe_pending = False
+        self._warmup_metrics["capabilityProbeDeferred"] = False
+        self._warmup_metrics["capabilityProbeAfterRenderMs"] = (time.time_ns() - probe_started_ns) / 1e6
+        if vendor:
+            self._runtime_capabilities["openGLVendor"] = vendor
+        if renderer:
+            self._runtime_capabilities["openGLRenderer"] = renderer
+        if version:
+            self._runtime_capabilities["openGLVersion"] = version
+        if capabilities_report:
+            self._runtime_capabilities["openGLReport"] = capabilities_report
+        self._runtime_capabilities["openglAvailable"] = bool(
+            self._runtime_capabilities.get("openGLVendor")
+            or self._runtime_capabilities.get("openGLRenderer")
+            or self._runtime_capabilities.get("openGLVersion")
+            or self._runtime_capabilities.get("openGLReport")
+        )
+        self._runtime_capabilities["runtimeProbePending"] = False
 
     def _safe_window_string(self, method_name: str) -> str:
         method = getattr(self.render_window, method_name, None)
@@ -639,6 +706,9 @@ class VTKDatacubeRenderer:
         capabilities["fallbackReason"] = self._fallback_reason
         return capabilities
 
+    def get_warmup_metrics(self) -> dict[str, Any]:
+        return dict(self._warmup_metrics)
+
     def get_renderer_diagnostics(self) -> dict[str, Any]:
         diagnostics = self.get_runtime_capabilities()
         diagnostics.update(
@@ -649,6 +719,7 @@ class VTKDatacubeRenderer:
                 "visualizationMode": self.visualization_mode,
                 "volumeRenderMode": self.volume_render_mode,
                 "stabilityMode": self.stability_mode,
+                "warmupMetrics": self.get_warmup_metrics(),
             }
         )
         return diagnostics
@@ -960,6 +1031,9 @@ class VTKDatacubeRenderer:
         render_started_ns = started_ns
         self.render_window.Render()
         render_finished_ns = time.time_ns()
+        self._finalize_runtime_capabilities_after_render()
+        if self._warmup_metrics.get("firstVisibleRenderWarmupMs") is None:
+            self._warmup_metrics["firstVisibleRenderWarmupMs"] = (render_finished_ns - render_started_ns) / 1e6
 
         capture_started_ns = render_finished_ns
         self.window_to_image.Modified()

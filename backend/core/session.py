@@ -278,6 +278,10 @@ class RemoteRenderSession:
                 self.runtime_metrics.first_frame_fits_load_ms = self.import_metrics.fits_total_ms
                 self.runtime_metrics.first_frame_sanitize_convert_ms = self.import_metrics.sanitize_convert_ms
                 self.runtime_metrics.first_frame_vtk_build_ms = self.import_metrics.vtk_build_ms
+            renderer_warmup_total = getattr(self.renderer, "get_warmup_metrics", lambda: {})().get("totalRendererWarmupMs")
+            if isinstance(renderer_warmup_total, (int, float)):
+                self.runtime_metrics.first_frame_renderer_warmup_ms = float(renderer_warmup_total)
+            elif self.import_metrics is not None:
                 self.runtime_metrics.first_frame_renderer_warmup_ms = max(
                     0.0,
                     self.runtime_metrics.first_frame_session_init_ms - self.import_metrics.fits_total_ms,

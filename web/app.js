@@ -81,6 +81,20 @@ const elements = {
   metricsGpuOffscreen: document.getElementById("metricsGpuOffscreen"),
   metricsCpuFallback: document.getElementById("metricsCpuFallback"),
   metricsFallbackReason: document.getElementById("metricsFallbackReason"),
+  metricsWarmupRenderWindow: document.getElementById("metricsWarmupRenderWindow"),
+  metricsWarmupDatasetLoad: document.getElementById("metricsWarmupDatasetLoad"),
+  metricsWarmupScalarSummary: document.getElementById("metricsWarmupScalarSummary"),
+  metricsWarmupVolumePipeline: document.getElementById("metricsWarmupVolumePipeline"),
+  metricsWarmupOutline: document.getElementById("metricsWarmupOutline"),
+  metricsWarmupSlice: document.getElementById("metricsWarmupSlice"),
+  metricsWarmupIsosurface: document.getElementById("metricsWarmupIsosurface"),
+  metricsWarmupAttach: document.getElementById("metricsWarmupAttach"),
+  metricsWarmupCamera: document.getElementById("metricsWarmupCamera"),
+  metricsWarmupCapabilityDetect: document.getElementById("metricsWarmupCapabilityDetect"),
+  metricsWarmupProbeDeferred: document.getElementById("metricsWarmupProbeDeferred"),
+  metricsWarmupProbeAfterRender: document.getElementById("metricsWarmupProbeAfterRender"),
+  metricsWarmupFirstVisibleRender: document.getElementById("metricsWarmupFirstVisibleRender"),
+  metricsWarmupTotal: document.getElementById("metricsWarmupTotal"),
   metricsActiveMapperClass: document.getElementById("metricsActiveMapperClass"),
   metricsRequestedMapperClass: document.getElementById("metricsRequestedMapperClass"),
   metricsSmartMapperRequestedMode: document.getElementById("metricsSmartMapperRequestedMode"),
@@ -2119,6 +2133,7 @@ function renderMetrics(payload) {
   const runtime = payload?.runtimeMetrics || {};
   const importMetrics = payload?.importMetrics || {};
   const renderer = payload?.rendererDiagnostics || {};
+  const warmup = renderer?.warmupMetrics || {};
   const pipeline = payload?.pipelineMetrics || {};
   const ice = payload?.iceMetrics || {};
   const datasetName = payload?.datasetName || payload?.datasetPath || "-";
@@ -2151,6 +2166,20 @@ function renderMetrics(payload) {
   setText(elements.metricsGpuOffscreen, formatBoolean(renderer.gpuOffscreenAvailable));
   setText(elements.metricsCpuFallback, formatBoolean(renderer.cpuFallbackAvailable));
   setText(elements.metricsFallbackReason, renderer.fallbackReason || "-");
+  setText(elements.metricsWarmupRenderWindow, formatMs(warmup.renderWindowCreationMs));
+  setText(elements.metricsWarmupDatasetLoad, formatMs(warmup.datasetLoadMs));
+  setText(elements.metricsWarmupScalarSummary, formatMs(warmup.scalarSummaryMs));
+  setText(elements.metricsWarmupVolumePipeline, formatMs(warmup.volumePipelineInitMs));
+  setText(elements.metricsWarmupOutline, formatMs(warmup.outlinePipelineInitMs));
+  setText(elements.metricsWarmupSlice, formatMs(warmup.slicePipelineInitMs));
+  setText(elements.metricsWarmupIsosurface, formatMs(warmup.isosurfacePipelineInitMs));
+  setText(elements.metricsWarmupAttach, formatMs(warmup.scenePropAttachMs));
+  setText(elements.metricsWarmupCamera, formatMs(warmup.cameraResetMs));
+  setText(elements.metricsWarmupCapabilityDetect, formatMs(warmup.capabilityDetectionMs));
+  setText(elements.metricsWarmupProbeDeferred, formatBoolean(warmup.capabilityProbeDeferred));
+  setText(elements.metricsWarmupProbeAfterRender, formatMs(warmup.capabilityProbeAfterRenderMs));
+  setText(elements.metricsWarmupFirstVisibleRender, formatMs(warmup.firstVisibleRenderWarmupMs));
+  setText(elements.metricsWarmupTotal, formatMs(warmup.totalRendererWarmupMs));
   setText(elements.metricsActiveMapperClass, pipeline.activeMapperClass || renderer.activeMapperClass || "-");
   setText(elements.metricsRequestedMapperClass, pipeline.requestedMapperClass || renderer.requestedMapperClass || "-");
   setText(elements.metricsSmartMapperRequestedMode, pipeline.smartMapperRequestedMode || renderer.smartMapperRequestedMode || "-");

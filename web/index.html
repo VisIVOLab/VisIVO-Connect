@@ -438,6 +438,66 @@
                     </div>
                   </div>
 
+                  <h3 class="metrics-subtitle">Renderer Warmup</h3>
+                  <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">Render window creation</span>
+                      <span class="metric-value" id="metricsWarmupRenderWindow">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Dataset load</span>
+                      <span class="metric-value" id="metricsWarmupDatasetLoad">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Scalar summary</span>
+                      <span class="metric-value" id="metricsWarmupScalarSummary">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Volume pipeline init</span>
+                      <span class="metric-value" id="metricsWarmupVolumePipeline">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Outline init</span>
+                      <span class="metric-value" id="metricsWarmupOutline">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Slice init</span>
+                      <span class="metric-value" id="metricsWarmupSlice">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Isosurface init</span>
+                      <span class="metric-value" id="metricsWarmupIsosurface">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Prop attach</span>
+                      <span class="metric-value" id="metricsWarmupAttach">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Camera reset</span>
+                      <span class="metric-value" id="metricsWarmupCamera">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Capability detect</span>
+                      <span class="metric-value" id="metricsWarmupCapabilityDetect">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Capability probe deferred</span>
+                      <span class="metric-value" id="metricsWarmupProbeDeferred">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Capability probe after render</span>
+                      <span class="metric-value" id="metricsWarmupProbeAfterRender">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">First visible render warmup</span>
+                      <span class="metric-value" id="metricsWarmupFirstVisibleRender">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Total renderer warmup</span>
+                      <span class="metric-value" id="metricsWarmupTotal">-</span>
+                    </div>
+                  </div>
+
                   <h3 class="metrics-subtitle">Frame Pipeline</h3>
                   <div class="metrics-grid">
                     <div class="metric-row">
@@ -571,6 +631,6 @@
       </main>
     </div>
 
-    <script type="module" src="/web/app.js?v=20260320e"></script>
+    <script type="module" src="/web/app.js?v=20260320f"></script>
   </body>
 </html>
