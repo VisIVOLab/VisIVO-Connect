@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
@@ -9,6 +10,7 @@ from typing import Any
 
 from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceCandidate, RTCIceServer, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
+import av
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -36,6 +38,40 @@ if WEB_DIR.exists():
 sessions = SessionManager(max_sessions=config.max_sessions, idle_timeout_s=config.idle_timeout_s)
 cleanup_task = None
 log = logging.getLogger("uvicorn.error")
+
+
+class _JpegEncoder:
+    def __init__(self) -> None:
+        self._codec: av.CodecContext | None = None
+        self._width = 0
+        self._height = 0
+
+    def _reset(self, width: int, height: int) -> None:
+        self._codec = av.CodecContext.create("mjpeg", "w")
+        self._codec.width = width
+        self._codec.height = height
+        self._codec.pix_fmt = "yuvj420p"
+        self._codec.options = {"q": "5"}
+        self._codec.open()
+        self._width = width
+        self._height = height
+
+    def encode(self, frame_bgr: Any) -> bytes:
+        height = int(frame_bgr.shape[0])
+        width = int(frame_bgr.shape[1])
+        if self._codec is None or width != self._width or height != self._height:
+            self._reset(width, height)
+        video_frame = av.VideoFrame.from_ndarray(frame_bgr, format="bgr24")
+        packets = self._codec.encode(video_frame)
+        if not packets:
+            return b""
+        return b"".join(bytes(packet) for packet in packets)
+
+
+async def _close_peer_connection(session: RemoteRenderSession) -> None:
+    if session.peer_connection is not None:
+        await session.peer_connection.close()
+        session.peer_connection = None
 
 
 def _is_authorized(token: str | None, expected: str | None) -> bool:
@@ -89,8 +125,7 @@ async def _emit_state(ws: WebSocket, session: RemoteRenderSession, text: str | N
 
 
 async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -> RTCPeerConnection:
-    if session.peer_connection is not None:
-        await session.peer_connection.close()
+    await _close_peer_connection(session)
 
     pc = RTCPeerConnection(_pc_config_from_env())
     session.peer_connection = pc
@@ -137,6 +172,55 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
         }
     )
     return pc
+
+
+async def _ws_stream_loop(
+    session: RemoteRenderSession,
+    ws: WebSocket,
+    fps: float,
+) -> None:
+    min_interval_s = 1.0 / min(max(float(fps), 1.0), 30.0)
+    encoder = _JpegEncoder()
+    try:
+        while True:
+            loop_started_ns = time.time_ns()
+            frame_packet = session.render_if_needed()
+            if frame_packet is None:
+                frame_packet = session.render_if_needed(force=True)
+            if frame_packet is None:
+                await asyncio.sleep(min_interval_s)
+                continue
+
+            encode_started_ns = time.time_ns()
+            jpeg_bytes = encoder.encode(frame_packet.frame_bgr)
+            encode_ms = (time.time_ns() - encode_started_ns) / 1e6
+            session.stats.add_sample(session.stats.encode_time_ms, encode_ms)
+            if not jpeg_bytes:
+                await asyncio.sleep(min_interval_s)
+                continue
+
+            frame_delivery_ms = (time.time_ns() - frame_packet.render_finished_ns) / 1e6
+            session.stats.add_sample(session.stats.frame_delivery_latency_ms, frame_delivery_ms)
+            session.stats.delivered_frames += 1
+            await ws.send_json(
+                {
+                    "type": "ws-frame",
+                    "serial": frame_packet.serial,
+                    "mime": "image/jpeg",
+                    "data": base64.b64encode(jpeg_bytes).decode("ascii"),
+                    "width": int(frame_packet.frame_bgr.shape[1]),
+                    "height": int(frame_packet.frame_bgr.shape[0]),
+                    "sessionId": session.session_id,
+                }
+            )
+            elapsed_s = (time.time_ns() - loop_started_ns) / 1e9
+            sleep_s = min_interval_s - elapsed_s
+            if sleep_s > 0:
+                await asyncio.sleep(sleep_s)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("WS fallback stream loop failed session=%s", session.session_id)
 
 
 @app.get("/")
@@ -208,6 +292,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
 async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     session: RemoteRenderSession | None = None
+    ws_stream_task: asyncio.Task[None] | None = None
     token = ws.query_params.get("token")
     if config.auth_token and token and token != config.auth_token:
         await ws.send_json({"type": "error", "message": "unauthorized"})
@@ -228,6 +313,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             if msg_type == "hello":
                 requested_session_id = payload.get("sessionId")
                 dataset_path = payload.get("datasetPath") or config.dataset_path
+                force_ws_fallback = bool(payload.get("forceWsFallback"))
                 msg_token = payload.get("token")
                 if config.auth_token and not (msg_token == config.auth_token or token == config.auth_token):
                     await ws.send_json({"type": "error", "message": "unauthorized"})
@@ -241,7 +327,18 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     height=int(viewport.get("height", 720)),
                     dpr=float(viewport.get("dpr", 1.0)),
                 )
-                await _attach_peer_connection(session, ws)
+                if not force_ws_fallback:
+                    await _attach_peer_connection(session, ws)
+                else:
+                    await _close_peer_connection(session)
+                    if ws_stream_task is not None:
+                        ws_stream_task.cancel()
+                        try:
+                            await ws_stream_task
+                        except asyncio.CancelledError:
+                            pass
+                    ws_stream_task = asyncio.create_task(_ws_stream_loop(session, ws, 8.0))
+                    await ws.send_json({"type": "ws-stream.started", "fps": 8.0, "sessionId": session.session_id})
                 await ws.send_json({"type": "stream-ready", "sessionId": session.session_id})
                 await _emit_state(ws, session, text="Session connected")
                 continue
@@ -256,6 +353,10 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await session.peer_connection.setRemoteDescription(description)
                 continue
 
+            if msg_type in {"webrtc.stop", "rtc.stop"}:
+                await _close_peer_connection(session)
+                continue
+
             if msg_type in {"ice", "ice-candidate", "webrtc.ice"}:
                 candidate = _normalize_candidate(payload)
                 if candidate and session.peer_connection:
@@ -266,6 +367,35 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         session.session_id,
                     )
                     await session.peer_connection.addIceCandidate(candidate)
+                continue
+
+            if msg_type in {"ws-stream.start", "ws.stream.start"}:
+                await _close_peer_connection(session)
+                target_fps = payload.get("fps", 8)
+                try:
+                    target_fps = float(target_fps)
+                except Exception:
+                    target_fps = 8.0
+                target_fps = min(max(target_fps, 1.0), 30.0)
+                if ws_stream_task is not None:
+                    ws_stream_task.cancel()
+                    try:
+                        await ws_stream_task
+                    except asyncio.CancelledError:
+                        pass
+                ws_stream_task = asyncio.create_task(_ws_stream_loop(session, ws, target_fps))
+                await ws.send_json({"type": "ws-stream.started", "fps": target_fps, "sessionId": session.session_id})
+                continue
+
+            if msg_type in {"ws-stream.stop", "ws.stream.stop"}:
+                if ws_stream_task is not None:
+                    ws_stream_task.cancel()
+                    try:
+                        await ws_stream_task
+                    except asyncio.CancelledError:
+                        pass
+                    ws_stream_task = None
+                await ws.send_json({"type": "ws-stream.stopped", "sessionId": session.session_id})
                 continue
 
             if msg_type == "resize":
@@ -338,6 +468,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        if ws_stream_task is not None:
+            ws_stream_task.cancel()
+            try:
+                await ws_stream_task
+            except asyncio.CancelledError:
+                pass
         if session:
             await sessions.close(session.session_id)
 

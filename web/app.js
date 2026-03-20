@@ -3,6 +3,7 @@ const elements = {
   stageFrame: document.getElementById("stageFrame"),
   stageOverlay: document.getElementById("stageOverlay"),
   remoteVideo: document.getElementById("remoteVideo"),
+  fallbackImage: document.getElementById("fallbackImage"),
   gestureLayer: document.getElementById("gestureLayer"),
   connectionState: document.getElementById("connectionState"),
   renderState: document.getElementById("renderState"),
@@ -186,6 +187,14 @@ const state = {
     statsTimer: 0,
     lastPairSummary: "",
   },
+  transport: {
+    forceWsFallback: false,
+    fallbackTimer: 0,
+    fallbackTimeoutMs: 7000,
+    wsFallbackRequested: false,
+    wsFallbackActive: false,
+    wsFrameCount: 0,
+  },
 };
 
 const DEFAULT_WS_URL = "/ws";
@@ -193,6 +202,11 @@ const DEFAULT_WS_URL = "/ws";
   const query = new URLSearchParams(window.location.search);
   const initialWsUrl = pickInitialWsUrl();
   state.rtc.forceRelayOnly = isTruthyQueryParam(query.get("relayOnly"));
+  state.transport.forceWsFallback = isTruthyQueryParam(query.get("wsFallback"));
+  const fallbackTimeoutMs = Number(query.get("fallbackTimeoutMs"));
+  if (Number.isFinite(fallbackTimeoutMs) && fallbackTimeoutMs >= 1000) {
+    state.transport.fallbackTimeoutMs = Math.min(Math.round(fallbackTimeoutMs), 30000);
+  }
   elements.wsUrl.value = initialWsUrl && initialWsUrl.trim() ? initialWsUrl.trim() : DEFAULT_WS_URL;
   console.info(
     "[VisIVO Connect] bootstrap wsUrl=",
@@ -200,7 +214,9 @@ const DEFAULT_WS_URL = "/ws";
     "location=",
     window.location.href,
     "relayOnly=",
-    state.rtc.forceRelayOnly
+    state.rtc.forceRelayOnly,
+    "wsFallback=",
+    state.transport.forceWsFallback
   );
 }
 elements.sessionId.textContent = state.sessionId;
@@ -465,6 +481,10 @@ function openSocket() {
 
   socket.addEventListener("open", () => {
     state.reconnectAttempts = 0;
+    state.transport.wsFallbackRequested = false;
+    state.transport.wsFallbackActive = false;
+    state.transport.wsFrameCount = 0;
+    showWebRtcVideo();
     elements.disconnectButton.disabled = false;
     elements.connectButton.disabled = true;
     setConnectionState("connected", "ok");
@@ -476,10 +496,14 @@ function openSocket() {
       ua: navigator.userAgent,
       viewport: currentViewport(),
       renderMode: state.renderMode,
+      forceWsFallback: state.transport.forceWsFallback,
     });
     sendRenderParams();
     reportResize(true);
     startMetricsPolling();
+    if (state.transport.forceWsFallback) {
+      startWsFallback("query-param");
+    }
   });
 
   socket.addEventListener("message", (event) => {
@@ -488,9 +512,15 @@ function openSocket() {
 
   socket.addEventListener("close", (event) => {
     state.ws = null;
+    state.transport.wsFallbackRequested = false;
+    state.transport.wsFallbackActive = false;
+    state.transport.wsFrameCount = 0;
+    elements.fallbackImage.removeAttribute("src");
+    showWebRtcVideo();
     elements.disconnectButton.disabled = true;
     elements.connectButton.disabled = false;
     stopMetricsPolling();
+    clearWsFallbackTimer();
     cleanupPeerConnection();
     const closeText = `WS closed ${event.code}${event.reason ? ` ${event.reason}` : ""}`;
     logEvent(closeText);
@@ -524,6 +554,7 @@ function disconnect(manual = true) {
   clearTimeout(state.reconnectTimer);
   state.reconnectTimer = null;
   stopMetricsPolling();
+  stopWsFallback("", false);
 
   if (state.ws) {
     try {
@@ -624,6 +655,17 @@ function handleSocketMessage(raw) {
     case "stream-ready":
       logEvent("VisIVO Connect stream ready");
       break;
+    case "ws-stream.started":
+      state.transport.wsFallbackActive = true;
+      logEvent(`WS fallback started (${Math.round(Number(message.fps) || 0)} fps)`);
+      break;
+    case "ws-stream.stopped":
+      state.transport.wsFallbackActive = false;
+      logEvent("WS fallback stopped");
+      break;
+    case "ws-frame":
+      handleWsFrame(message);
+      break;
     case "error":
       setConnectionState("error", "danger", message.message || "Server error");
       break;
@@ -634,9 +676,94 @@ function handleSocketMessage(raw) {
   }
 }
 
+function showWebRtcVideo() {
+  elements.remoteVideo.classList.remove("hidden");
+  elements.fallbackImage.classList.add("hidden");
+}
+
+function showWsFallbackImage() {
+  elements.remoteVideo.classList.add("hidden");
+  elements.fallbackImage.classList.remove("hidden");
+}
+
+function clearWsFallbackTimer() {
+  clearTimeout(state.transport.fallbackTimer);
+  state.transport.fallbackTimer = 0;
+}
+
+function scheduleWsFallbackTimer() {
+  clearWsFallbackTimer();
+  if (state.transport.forceWsFallback || state.transport.wsFallbackActive) {
+    return;
+  }
+  state.transport.fallbackTimer = window.setTimeout(() => {
+    state.transport.fallbackTimer = 0;
+    const pc = state.pc;
+    if (!pc || pc.connectionState === "connected") {
+      return;
+    }
+    startWsFallback("rtc-timeout");
+  }, state.transport.fallbackTimeoutMs);
+}
+
+function startWsFallback(reason = "manual") {
+  clearWsFallbackTimer();
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  if (state.transport.wsFallbackRequested || state.transport.wsFallbackActive) {
+    return;
+  }
+  cleanupPeerConnection();
+  state.transport.wsFallbackRequested = true;
+  state.transport.wsFrameCount = 0;
+  send({ type: "webrtc.stop", sessionId: state.sessionId });
+  send({
+    type: "ws-stream.start",
+    sessionId: state.sessionId,
+    fps: Math.max(2, Math.min(12, Math.round(state.renderParams.targetFps / 2))),
+  });
+  showWsFallbackImage();
+  setConnectionState("connected", "warn", "Fallback WS stream");
+  logEvent(`WS fallback requested (${reason})`);
+}
+
+function stopWsFallback(reason = "rtc-connected", notifyServer = true) {
+  clearWsFallbackTimer();
+  if (notifyServer && (state.transport.wsFallbackRequested || state.transport.wsFallbackActive)) {
+    send({ type: "ws-stream.stop", sessionId: state.sessionId });
+  }
+  state.transport.wsFallbackRequested = false;
+  state.transport.wsFallbackActive = false;
+  state.transport.wsFrameCount = 0;
+  elements.fallbackImage.removeAttribute("src");
+  showWebRtcVideo();
+  if (reason) {
+    logEvent(`WS fallback off (${reason})`);
+  }
+}
+
+function handleWsFrame(message) {
+  if (!message || typeof message.data !== "string" || !message.data) {
+    return;
+  }
+  state.transport.wsFallbackRequested = false;
+  state.transport.wsFallbackActive = true;
+  state.transport.wsFrameCount += 1;
+  showWsFallbackImage();
+  elements.fallbackImage.src = `data:${message.mime || "image/jpeg"};base64,${message.data}`;
+  elements.stageOverlay.classList.add("hidden");
+  if (state.transport.wsFrameCount === 1) {
+    logEvent("WS fallback frame received");
+  }
+}
+
 function maybeCreatePeerConnection() {
   if (state.pc) {
     return state.pc;
+  }
+  if (state.transport.forceWsFallback) {
+    return null;
   }
 
   const iceServers = Array.isArray(state.iceServers) ? state.iceServers : [];
@@ -658,6 +785,7 @@ function maybeCreatePeerConnection() {
         maybePlay.catch(() => {});
       }
       state.videoTrackFound = true;
+      stopWsFallback("", false);
       elements.stageOverlay.classList.add("hidden");
       logEvent("VisIVO Connect track attached");
     }
@@ -677,6 +805,7 @@ function maybeCreatePeerConnection() {
   pc.addEventListener("connectionstatechange", () => {
     logEvent(`RTC ${pc.connectionState}`);
     if (pc.connectionState === "connected") {
+      clearWsFallbackTimer();
       state.rtc.connectedAtMs = performance.now();
       if (state.rtc.offerReceivedAtMs > 0) {
         const connectMs = Math.max(0, state.rtc.connectedAtMs - state.rtc.offerReceivedAtMs);
@@ -685,6 +814,7 @@ function maybeCreatePeerConnection() {
         );
       }
       elements.stageOverlay.classList.add("hidden");
+      stopWsFallback("", false);
       setConnectionState("connected", "ok");
     }
     if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
@@ -697,11 +827,15 @@ function maybeCreatePeerConnection() {
   });
 
   pc.addTransceiver("video", { direction: "recvonly" });
+  scheduleWsFallbackTimer();
   return pc;
 }
 
 async function applyRemoteDescription(payload) {
   const pc = maybeCreatePeerConnection();
+  if (!pc) {
+    return;
+  }
   const sdp = normalizeDescription(payload);
   if (!sdp) {
     return;
@@ -722,6 +856,9 @@ async function applyRemoteDescription(payload) {
 
 async function addIceCandidate(payload) {
   const pc = maybeCreatePeerConnection();
+  if (!pc) {
+    return;
+  }
   const candidate = payload?.candidate ?? payload;
   if (!candidate) {
     return;
@@ -789,6 +926,7 @@ function scheduleRtcRestart(reason) {
 }
 
 function cleanupPeerConnection() {
+  clearWsFallbackTimer();
   clearTimeout(state.rtc.restartTimer);
   state.rtc.restartTimer = 0;
   clearTimeout(state.pendingInteractionEnd);
@@ -828,7 +966,9 @@ function cleanupPeerConnection() {
   state.remoteStream = null;
   state.videoTrackFound = false;
   elements.remoteVideo.srcObject = null;
-  elements.stageOverlay.classList.remove("hidden");
+  if (!state.transport.wsFallbackActive) {
+    elements.stageOverlay.classList.remove("hidden");
+  }
 }
 
 function startRtcStatsPolling(pc) {

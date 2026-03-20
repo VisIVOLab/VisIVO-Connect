@@ -180,6 +180,7 @@ input {
 }
 
 .remote-video,
+.fallback-image,
 .gesture-layer {
   position: absolute;
   inset: 0;
@@ -190,6 +191,16 @@ input {
 .remote-video {
   object-fit: contain;
   background: #000;
+}
+
+.fallback-image {
+  object-fit: contain;
+  background: #000;
+}
+
+.remote-video.hidden,
+.fallback-image.hidden {
+  display: none;
 }
 
 .gesture-layer {
