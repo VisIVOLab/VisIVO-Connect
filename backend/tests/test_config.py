@@ -34,7 +34,7 @@ def test_resolve_dataset_path_rejects_paths_outside_allowed_root(tmp_path: Path)
     outsider = tmp_path / "outside.fits"
     outsider.write_text("x")
 
-    with pytest.raises(ConfigError, match="outside VISIVO_DATASET_ROOT"):
+    with pytest.raises(ConfigError, match=r"is outside VISIVO_DATASET_ROOT"):
         resolve_dataset_path(str(outsider), allowed_root=str(allowed), strict_exists=True)
 
 
