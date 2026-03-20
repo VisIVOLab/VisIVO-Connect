@@ -155,8 +155,17 @@ Volume modes (`vtkGPUVolumeRayCastMapper`, no fake separate “raytracing” mod
 {"type":"render.params","params":{"visualizationMode":"volume","volume":{"renderMode":"mip"}}}
 {"type":"render.params","params":{"visualizationMode":"volume","volume":{"renderMode":"slice","sliceAxis":"z","slicePosition":0.5}}}
 {"type":"render.params","params":{"visualizationMode":"volume","volume":{"sampleDistanceScale":1.6,"imageSampleDistance":2.4}}}
+{"type":"render.params","params":{"visualizationMode":"volume","volume":{"palette":"Inferno","scaleMode":"linear"}}}
+{"type":"render.params","params":{"visualizationMode":"volume","volume":{"palette":"Viridis","scaleMode":"log"}}}
 {"type":"render.params","params":{"visualizationMode":"volume","volume":{"cropping":{"enabled":true,"bounds":[0.2,0.9,0.1,0.85,0.15,0.8]}}}}
 ```
+
+Palette notes:
+
+- palette catalog is imported from ViaLacteaVisualAnalytics `ColorMaps.cpp`
+- `scaleMode` supports `linear` and `log`
+- in `log` mode, values `<= 0` are clamped below the first positive sample; this keeps the GPU path stable without invalid log-domain points
+- RGBA palettes from the desktop source keep their RGB transfer faithfully; alpha is not remapped into volume opacity because the desktop `SetColorTransferFunction(...)` helper also transfers RGB only
 
 ## Metrics and Demo Tests
 

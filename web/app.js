@@ -31,6 +31,8 @@ const elements = {
   volumeRenderMode: document.getElementById("volumeRenderMode"),
   volumeOpacityScale: document.getElementById("volumeOpacityScale"),
   volumeOpacityScaleValue: document.getElementById("volumeOpacityScaleValue"),
+  volumePalette: document.getElementById("volumePalette"),
+  volumeScaleMode: document.getElementById("volumeScaleMode"),
   volumeSampleDistanceScale: document.getElementById("volumeSampleDistanceScale"),
   volumeSampleDistanceScaleValue: document.getElementById("volumeSampleDistanceScaleValue"),
   volumeImageSampleDistance: document.getElementById("volumeImageSampleDistance"),
@@ -204,6 +206,9 @@ const state = {
   },
   volume: {
     renderMode: "composite",
+    palette: "Inferno",
+    scaleMode: "linear",
+    availablePalettes: ["Inferno"],
     opacityScale: 1.8,
     sampleDistanceScale: null,
     sampleDistanceManual: false,
@@ -318,6 +323,8 @@ elements.targetFpsValue.textContent = formatFps(state.renderParams.targetFps);
 elements.interactiveDownsampleValue.textContent = `${state.quality.interactiveDownsample.toFixed(1)}x`;
 elements.hqDetailPreset.value = state.quality.hqDetailPreset;
 elements.visualizationMode.value = state.visualization.mode;
+elements.volumePalette.value = state.volume.palette;
+elements.volumeScaleMode.value = state.volume.scaleMode;
 applyIsoRange(state.visualization.isoRangeMin, state.visualization.isoRangeMax);
 elements.isoValue.value = String(state.visualization.isoValue);
 elements.isoValueNumber.value = String(state.visualization.isoValue);
@@ -492,6 +499,16 @@ elements.volumeRenderMode.addEventListener("change", () => {
 elements.volumeOpacityScale.addEventListener("input", () => {
   state.volume.opacityScale = Number(elements.volumeOpacityScale.value);
   elements.volumeOpacityScaleValue.textContent = formatFloat(state.volume.opacityScale);
+  sendRenderParams();
+});
+
+elements.volumePalette.addEventListener("change", () => {
+  state.volume.palette = elements.volumePalette.value || "Inferno";
+  sendRenderParams();
+});
+
+elements.volumeScaleMode.addEventListener("change", () => {
+  state.volume.scaleMode = elements.volumeScaleMode.value === "log" ? "log" : "linear";
   sendRenderParams();
 });
 
@@ -1266,7 +1283,7 @@ function sendRenderParams() {
     },
   });
   logEvent(
-    `Render params scale=${effectiveScale.toFixed(2)} bitrate=${effectiveBitrate.toFixed(0)}Mbps vis=${state.visualization.mode} mode=${state.volume.renderMode} iso=${formatIso(state.visualization.isoValue)} interactiveDownsample=${state.quality.interactiveDownsample.toFixed(1)}x hq=${currentHqDetailPreset().label}`
+    `Render params scale=${effectiveScale.toFixed(2)} bitrate=${effectiveBitrate.toFixed(0)}Mbps vis=${state.visualization.mode} mode=${state.volume.renderMode} palette=${state.volume.palette} scaleMode=${state.volume.scaleMode} iso=${formatIso(state.visualization.isoValue)} interactiveDownsample=${state.quality.interactiveDownsample.toFixed(1)}x hq=${currentHqDetailPreset().label}`
   );
 }
 
@@ -1964,8 +1981,31 @@ function syncCropBoundsFromUI() {
   elements.cropZMax.value = formatFloat(state.volume.cropping.bounds[5]);
 }
 
+function syncVolumePaletteOptions() {
+  const palettes = Array.isArray(state.volume.availablePalettes) && state.volume.availablePalettes.length > 0
+    ? state.volume.availablePalettes
+    : ["Inferno"];
+  const selected = palettes.includes(state.volume.palette) ? state.volume.palette : palettes[0];
+  const existing = Array.from(elements.volumePalette.options).map((option) => option.value);
+  const needsRebuild = existing.length !== palettes.length || existing.some((value, index) => value !== palettes[index]);
+  if (needsRebuild) {
+    elements.volumePalette.replaceChildren(
+      ...palettes.map((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        return option;
+      })
+    );
+  }
+  state.volume.palette = selected;
+  elements.volumePalette.value = selected;
+}
+
 function syncVolumeControlsToUI() {
+  syncVolumePaletteOptions();
   elements.volumeRenderMode.value = state.volume.renderMode;
+  elements.volumeScaleMode.value = state.volume.scaleMode === "log" ? "log" : "linear";
   elements.volumeOpacityScale.value = String(state.volume.opacityScale);
   elements.volumeOpacityScaleValue.textContent = formatFloat(state.volume.opacityScale);
   const sampleDistanceScale = effectiveVolumeSampleDistanceScale();
@@ -1990,6 +2030,17 @@ function syncVolumeControlsToUI() {
 function mergeVolumeParams(incoming) {
   if (typeof incoming.renderMode === "string") {
     state.volume.renderMode = incoming.renderMode;
+  }
+  if (typeof incoming.palette === "string" && incoming.palette.trim()) {
+    state.volume.palette = incoming.palette.trim();
+  }
+  if (typeof incoming.scaleMode === "string") {
+    state.volume.scaleMode = incoming.scaleMode.toLowerCase().startsWith("log") ? "log" : "linear";
+  }
+  if (Array.isArray(incoming.availablePalettes) && incoming.availablePalettes.length > 0) {
+    state.volume.availablePalettes = incoming.availablePalettes
+      .filter((value) => typeof value === "string" && value.trim())
+      .map((value) => value.trim());
   }
   if (Number.isFinite(incoming.opacityScale)) {
     state.volume.opacityScale = Number(incoming.opacityScale);
@@ -2030,6 +2081,8 @@ function mergeVolumeParams(incoming) {
 function buildVolumeParamsPayload() {
   const payload = {
     renderMode: state.volume.renderMode,
+    palette: state.volume.palette,
+    scaleMode: state.volume.scaleMode,
     opacityScale: state.volume.opacityScale,
     shade: state.volume.shade,
     sliceAxis: state.volume.sliceAxis,

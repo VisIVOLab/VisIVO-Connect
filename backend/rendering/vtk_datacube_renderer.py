@@ -15,6 +15,12 @@ from vtk.util import numpy_support
 from backend.core.models import HIGH_QUALITY_PROFILE, INTERACTIVE_PROFILE, QualityProfile
 from backend.data import load_image_data
 from backend.rendering.isosurface_pipeline import build_isosurface_pipeline
+from backend.rendering.vlva_colormaps import (
+    DEFAULT_COLOR_MAP,
+    build_color_transfer_function,
+    get_color_map_catalog,
+    get_color_map_names,
+)
 
 _SCALAR_SUMMARY_CACHE_MAX_ENTRIES = 4
 _scalar_summary_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
@@ -121,19 +127,23 @@ class VTKDatacubeRenderer:
         self.volume_image_sample_distance_override: float | None = None
         self.volume_shade_override: bool | None = None
         self.volume_render_mode = "composite"
+        self.volume_palette = DEFAULT_COLOR_MAP
+        self.volume_scale_mode = "linear"
+        self._volume_palette_application: dict[str, Any] = {
+            "palette": DEFAULT_COLOR_MAP,
+            "requestedScaleMode": "linear",
+            "effectiveScaleMode": "linear",
+            "positiveLogFloor": None,
+            "sampleCount": 0,
+            "hasAlpha": False,
+            "kind": "table",
+        }
         self.slice_axis = "z"
         self.slice_index: int | None = None
         self.cropping_enabled = False
         self.cropping_bounds_norm = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
 
         self._volume_scalar_range = (0.0, 1.0)
-        self._volume_color_points = (
-            (0.0, (0.01, 0.02, 0.05)),
-            (0.20, (0.06, 0.15, 0.35)),
-            (0.45, (0.25, 0.6, 0.9)),
-            (0.70, (0.95, 0.75, 0.25)),
-            (1.0, (1.0, 0.95, 0.95)),
-        )
         self._volume_opacity_points = (
             (0.0, 0.0),
             (0.20, 0.0),
@@ -280,6 +290,7 @@ class VTKDatacubeRenderer:
                 "finiteCount": int(finite.size),
                 "min": float(finite.min()),
                 "max": float(finite.max()),
+                "positiveMin": float(finite[finite > 0.0].min()) if np.any(finite > 0.0) else None,
                 "p01": float(p01),
                 "p50": float(p50),
                 "p99": float(p99),
@@ -649,19 +660,43 @@ class VTKDatacubeRenderer:
             hi = lo + 1.0
         self._volume_scalar_range = (lo, hi)
 
-        color = vtk.vtkColorTransferFunction()
+        positive_floor = self._dataset_positive_floor()
+        color, palette_application = build_color_transfer_function(
+            self.volume_palette,
+            (lo, hi),
+            scale_mode=self.volume_scale_mode,
+            positive_floor=positive_floor,
+        )
         opacity = vtk.vtkPiecewiseFunction()
-        for fraction, rgb in self._volume_color_points:
-            scalar = lo + (hi - lo) * fraction
-            color.AddRGBPoint(scalar, *rgb)
         for fraction, alpha in self._volume_opacity_points:
             scalar = lo + (hi - lo) * fraction
             opacity.AddPoint(scalar, self._scaled_opacity(alpha))
 
+        self._volume_palette_application = dict(palette_application)
         self.volume_property.SetColor(color)
         self.volume_property.SetScalarOpacity(opacity)
         self.volume_property.SetInterpolationTypeToLinear()
         self.volume_property.SetIndependentComponents(1)
+
+    def _dataset_positive_floor(self) -> float | None:
+        if self._dataset_scalar_summary is None:
+            return None
+        value = self._dataset_scalar_summary.get("positiveMin")
+        if isinstance(value, (int, float)) and np.isfinite(value) and float(value) > 0.0:
+            return float(value)
+        return None
+
+    def _normalize_palette_name(self, value: Any) -> str:
+        if isinstance(value, str):
+            requested = value.strip()
+            if requested in get_color_map_names():
+                return requested
+        return DEFAULT_COLOR_MAP
+
+    def _normalize_scale_mode(self, value: Any) -> str:
+        if isinstance(value, str) and value.strip().lower() in {"linear", "log", "logarithmic"}:
+            return "log" if value.strip().lower().startswith("log") else "linear"
+        return "linear"
 
     def _configure_outline(self, image_data: vtk.vtkImageData) -> None:
         outline_filter = vtk.vtkOutlineFilter()
@@ -778,6 +813,13 @@ class VTKDatacubeRenderer:
             "selectedRenderPath": self._selected_render_path,
             "capabilityProfile": self._capability_profile_name,
             "renderMode": self.volume_render_mode,
+            "palette": self.volume_palette,
+            "scaleMode": self.volume_scale_mode,
+            "effectiveScaleMode": self._volume_palette_application.get("effectiveScaleMode", self.volume_scale_mode),
+            "positiveLogFloor": self._volume_palette_application.get("positiveLogFloor"),
+            "paletteHasAlpha": self._volume_palette_application.get("hasAlpha", False),
+            "paletteKind": self._volume_palette_application.get("kind"),
+            "availablePalettes": get_color_map_names(),
             "opacityScale": self.volume_opacity_scale,
             "sampleDistanceScale": self.volume_sample_distance_scale_override,
             "imageSampleDistance": self.volume_image_sample_distance_override,
@@ -935,6 +977,10 @@ class VTKDatacubeRenderer:
                 "capabilityProfile": self._capability_profile_name,
                 "visualizationMode": self.visualization_mode,
                 "volumeRenderMode": self.volume_render_mode,
+                "palette": self.volume_palette,
+                "scaleMode": self.volume_scale_mode,
+                "paletteCatalog": get_color_map_catalog(),
+                "paletteApplication": dict(self._volume_palette_application),
                 "stabilityMode": self.stability_mode,
                 "warmupMetrics": self.get_warmup_metrics(),
             }
@@ -974,6 +1020,12 @@ class VTKDatacubeRenderer:
                 self.volume_render_mode = "slice"
         if isinstance(params.get("opacityScale"), (int, float)):
             self.set_volume_opacity_scale(float(params["opacityScale"]))
+        palette_requested = None
+        if isinstance(params.get("palette"), str):
+            palette_requested = self._normalize_palette_name(params["palette"])
+        scale_mode_requested = None
+        if isinstance(params.get("scaleMode"), str):
+            scale_mode_requested = self._normalize_scale_mode(params["scaleMode"])
         if isinstance(params.get("sampleDistanceScale"), (int, float)):
             self.volume_sample_distance_scale_override = max(0.1, float(params["sampleDistanceScale"]))
         if isinstance(params.get("imageSampleDistance"), (int, float)):
@@ -1024,6 +1076,16 @@ class VTKDatacubeRenderer:
                         max(0.0, min(1.0, z0)),
                         max(0.0, min(1.0, z1)),
                     )
+
+        palette_changed = False
+        if palette_requested is not None and palette_requested != self.volume_palette:
+            self.volume_palette = palette_requested
+            palette_changed = True
+        if scale_mode_requested is not None and scale_mode_requested != self.volume_scale_mode:
+            self.volume_scale_mode = scale_mode_requested
+            palette_changed = True
+        if palette_changed and self.image_data is not None:
+            self._configure_volume_transfer_functions(self.image_data)
 
         self._apply_volume_render_mode()
         self._apply_cropping()
