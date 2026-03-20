@@ -123,6 +123,40 @@ async def test_api_dataset_details_returns_fits_summary_on_demand(monkeypatch: A
     assert payload["supported"] is True
     assert payload["fits"]["hduCount"] >= 1
     assert payload["fits"]["hdus"][0]["shape"] == [4, 3, 2]
+    assert payload["fits"]["defaultHduIndex"] == 0
+    assert payload["fits"]["selectableHduCount"] == 1
+
+
+@pytest.mark.anyio
+async def test_api_dataset_details_exposes_multi_hdu_selection_metadata(monkeypatch: Any, tmp_path: Path) -> None:
+    root = tmp_path / "datasets"
+    root.mkdir()
+    fits_path = root / "multi.fits"
+    from astropy.io import fits
+    import numpy as np
+
+    primary = fits.PrimaryHDU()
+    sci = fits.ImageHDU(data=np.ones((4, 3, 2), dtype=np.float32), name="SCI")
+    weight = fits.ImageHDU(data=np.ones((5, 4, 3), dtype=np.float32), name="WEIGHT")
+    preview = fits.ImageHDU(data=np.ones((32, 32), dtype=np.float32), name="PREVIEW")
+    fits.HDUList([primary, preview, sci, weight]).writeto(fits_path, overwrite=True)
+
+    app_main = _load_app_module(
+        monkeypatch,
+        VISIVO_DATASET_ROOT=str(root),
+        VISIVO_STRICT_DATASET_PATH="1",
+    )
+
+    response = await app_main.api_dataset_details(_request("/api/datasets/details", "path=multi.fits"))
+    assert response.status_code == 200
+    payload = _json_payload(response)
+    assert payload["fits"]["hduCount"] == 4
+    assert payload["fits"]["defaultHduIndex"] == 2
+    assert payload["fits"]["selectableHduCount"] == 2
+    assert payload["fits"]["hdus"][1]["isSelectable"] is False
+    assert payload["fits"]["hdus"][2]["name"] == "SCI"
+    assert payload["fits"]["hdus"][2]["isDefault"] is True
+    assert payload["fits"]["hdus"][3]["name"] == "WEIGHT"
 
 
 def test_resolve_requested_dataset_path_supports_relative_paths_and_default_fallback(
@@ -145,6 +179,7 @@ def test_resolve_requested_dataset_path_supports_relative_paths_and_default_fall
     )
 
     assert app_main._resolve_requested_dataset_path("nested/cube_b.fits") == str(selected.resolve())
+    assert app_main._resolve_requested_dataset_path("nested/cube_b.fits#hdu=2") == f"{selected.resolve()}#hdu=2"
     assert app_main._resolve_requested_dataset_path(None) == str(default_dataset.resolve())
 
 

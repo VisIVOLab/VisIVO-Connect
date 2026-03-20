@@ -823,6 +823,20 @@
                 <div class="metric-row"><span class="metric-label">Supported</span><span class="metric-value" id="datasetDetailsSupported">-</span></div>
                 <div class="metric-row"><span class="metric-label">HDU count</span><span class="metric-value" id="datasetDetailsHduCount">-</span></div>
               </div>
+              <div class="dataset-details-section hidden" id="datasetHduSelectionSection">
+                <div class="overlay-kicker">HDU selection</div>
+                <label class="control-group">
+                  <span>Selected HDU</span>
+                  <select id="datasetHduSelect"></select>
+                </label>
+              </div>
+              <div class="dataset-details-section hidden" id="datasetHduSelectedSummarySection">
+                <div class="overlay-kicker">Selected HDU</div>
+                <div class="dataset-details-item">
+                  <div class="dataset-details-item-title" id="datasetHduSelectedTitle">-</div>
+                  <div class="dataset-details-item-meta" id="datasetHduSelectedMeta">-</div>
+                </div>
+              </div>
               <div class="dataset-details-section">
                 <div class="overlay-kicker">HDU summary</div>
                 <div class="dataset-details-list" id="datasetDetailsHdus"></div>

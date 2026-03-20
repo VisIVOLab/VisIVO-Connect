@@ -48,6 +48,11 @@ const elements = {
   datasetDetailsModified: document.getElementById("datasetDetailsModified"),
   datasetDetailsSupported: document.getElementById("datasetDetailsSupported"),
   datasetDetailsHduCount: document.getElementById("datasetDetailsHduCount"),
+  datasetHduSelectionSection: document.getElementById("datasetHduSelectionSection"),
+  datasetHduSelect: document.getElementById("datasetHduSelect"),
+  datasetHduSelectedSummarySection: document.getElementById("datasetHduSelectedSummarySection"),
+  datasetHduSelectedTitle: document.getElementById("datasetHduSelectedTitle"),
+  datasetHduSelectedMeta: document.getElementById("datasetHduSelectedMeta"),
   datasetDetailsHdus: document.getElementById("datasetDetailsHdus"),
   datasetDetailsHeader: document.getElementById("datasetDetailsHeader"),
   datasetOpenSelectedButton: document.getElementById("datasetOpenSelectedButton"),
@@ -292,6 +297,7 @@ const state = {
     modalOpen: false,
     selectedPath: "",
     selectedEntry: null,
+    selectedHduIndex: null,
     details: null,
     detailsLoading: false,
     detailsError: "",
@@ -508,6 +514,7 @@ function formatTimestamp(ms) {
 function resetDatasetDetails() {
   state.datasets.selectedEntry = null;
   state.datasets.selectedPath = "";
+  state.datasets.selectedHduIndex = null;
   state.datasets.details = null;
   state.datasets.detailsLoading = false;
   state.datasets.detailsError = "";
@@ -646,12 +653,58 @@ function renderDatasetBreadcrumb() {
   }
 }
 
+function formatDatasetHduTitle(hdu) {
+  if (!hdu) {
+    return "-";
+  }
+  const name = typeof hdu.name === "string" && hdu.name.trim() ? ` · ${hdu.name.trim()}` : "";
+  return `${formatInteger(hdu.index)}${name}`;
+}
+
+function formatDatasetHduMeta(hdu) {
+  if (!hdu) {
+    return "-";
+  }
+  return [
+    hdu.className || null,
+    Array.isArray(hdu.shape) ? hdu.shape.join("×") : null,
+    hdu.dtype || null,
+    Number.isFinite(hdu.ndim) ? `${formatInteger(hdu.ndim)}D` : null,
+    hdu.isSelectable === false ? "not renderable" : null,
+  ].filter(Boolean).join(" · ");
+}
+
+function selectedDatasetHdu(details = state.datasets.details) {
+  if (!details?.fits || !Array.isArray(details.fits.hdus)) {
+    return null;
+  }
+  const selected = details.fits.hdus.find((hdu) => hdu.index === state.datasets.selectedHduIndex);
+  if (selected) {
+    return selected;
+  }
+  return details.fits.hdus.find((hdu) => hdu.isDefault) || details.fits.hdus.find((hdu) => hdu.isSelectable) || details.fits.hdus[0] || null;
+}
+
+function selectedDatasetPathWithHdu() {
+  const relativePath = state.datasets.selectedPath;
+  if (typeof relativePath !== "string" || !relativePath.trim()) {
+    return "";
+  }
+  const selectedHdu = selectedDatasetHdu();
+  if (selectedHdu && Number.isFinite(selectedHdu.index)) {
+    return `${relativePath.trim()}#hdu=${selectedHdu.index}`;
+  }
+  return relativePath.trim();
+}
+
 function renderDatasetDetails() {
   const details = state.datasets.details;
   const showDetails = Boolean(details);
   elements.datasetDetailsEmpty.classList.toggle("hidden", showDetails);
   elements.datasetDetailsPanel.classList.toggle("hidden", !showDetails);
-  elements.datasetOpenSelectedButton.disabled = !state.datasets.selectedPath || state.datasets.detailsLoading || !showDetails || details?.supported === false;
+  const selectedHdu = selectedDatasetHdu(details);
+  const selectableHduCount = Number(details?.fits?.selectableHduCount || 0);
+  elements.datasetOpenSelectedButton.disabled = !state.datasets.selectedPath || state.datasets.detailsLoading || !showDetails || details?.supported === false || (Boolean(details?.fits) && !selectedHdu);
   if (!showDetails) {
     if (state.datasets.detailsError) {
       elements.datasetDetailsEmpty.textContent = state.datasets.detailsError;
@@ -668,22 +721,54 @@ function renderDatasetDetails() {
   elements.datasetDetailsModified.textContent = formatTimestamp(details.modifiedMs);
   elements.datasetDetailsSupported.textContent = details.supported ? "yes" : "no";
   elements.datasetDetailsHduCount.textContent = formatInteger(details.fits?.hduCount);
+  elements.datasetHduSelectionSection.classList.toggle("hidden", !(selectableHduCount > 1));
+  elements.datasetHduSelectedSummarySection.classList.toggle("hidden", !(details.fits && selectableHduCount <= 1 && selectedHdu));
+  elements.datasetHduSelect.replaceChildren();
+  for (const hdu of details.fits?.hdus || []) {
+    if (!hdu.isSelectable) {
+      continue;
+    }
+    const option = document.createElement("option");
+    option.value = String(hdu.index);
+    option.textContent = `${formatDatasetHduTitle(hdu)}${formatDatasetHduMeta(hdu) ? ` — ${formatDatasetHduMeta(hdu)}` : ""}`;
+    option.selected = Boolean(selectedHdu && hdu.index === selectedHdu.index);
+    elements.datasetHduSelect.appendChild(option);
+  }
+  elements.datasetHduSelectedTitle.textContent = formatDatasetHduTitle(selectedHdu);
+  elements.datasetHduSelectedMeta.textContent = formatDatasetHduMeta(selectedHdu);
   elements.datasetDetailsHdus.replaceChildren();
   for (const hdu of details.fits?.hdus || []) {
     const item = document.createElement("div");
-    item.className = "dataset-details-item";
+    item.className = `dataset-details-item${selectedHdu && hdu.index === selectedHdu.index ? " dataset-details-item-active" : ""}${hdu.isSelectable ? "" : " dataset-details-item-disabled"}`;
+    if (hdu.isSelectable) {
+      item.setAttribute("role", "button");
+      item.tabIndex = 0;
+      item.addEventListener("click", () => {
+        state.datasets.selectedHduIndex = hdu.index;
+        renderDatasetBrowser();
+      });
+      item.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          state.datasets.selectedHduIndex = hdu.index;
+          renderDatasetBrowser();
+        }
+      });
+    }
     const title = document.createElement("div");
     title.className = "dataset-details-item-title";
-    title.textContent = `${formatInteger(hdu.index)} ${hdu.name ? `· ${hdu.name}` : ""}`.trim();
+    title.textContent = formatDatasetHduTitle(hdu);
     const meta = document.createElement("div");
     meta.className = "dataset-details-item-meta";
-    const bits = [hdu.className, Array.isArray(hdu.shape) ? hdu.shape.join("×") : null, hdu.dtype || null].filter(Boolean);
-    meta.textContent = bits.join(" · ");
+    meta.textContent = formatDatasetHduMeta(hdu);
     item.append(title, meta);
     elements.datasetDetailsHdus.appendChild(item);
   }
   elements.datasetDetailsHeader.replaceChildren();
-  for (const [key, value] of Object.entries(details.fits?.headerPreview || {})) {
+  const headerSource = selectedHdu?.headerPreview && Object.keys(selectedHdu.headerPreview).length > 0
+    ? selectedHdu.headerPreview
+    : (details.fits?.headerPreview || {});
+  for (const [key, value] of Object.entries(headerSource)) {
     const item = document.createElement("div");
     item.className = "dataset-details-item";
     const title = document.createElement("div");
@@ -726,7 +811,7 @@ function renderDatasetBrowser() {
   const addEntryButton = (entry, extraText = "") => {
     const button = document.createElement("button");
     button.type = "button";
-    const isActive = entry.type === "file" && entry.path === state.datasets.activeDatasetPath;
+    const isActive = entry.type === "file" && entry.active === true;
     const isSelected = entry.type === "file" && entry.path === state.datasets.selectedPath;
     button.className = `dataset-entry ${entry.type === "directory" ? "dataset-entry-directory" : "dataset-entry-file"}${isActive ? " dataset-entry-active" : ""}${isSelected ? " toggle active" : ""}`;
     button.addEventListener("click", () => {
@@ -760,7 +845,7 @@ function renderDatasetBrowser() {
   for (const entry of entries) {
     const meta = entry.type === "directory"
       ? "Folder"
-      : entry.path === state.datasets.activeDatasetPath
+      : entry.active === true
         ? "Active dataset"
         : formatBytes(entry.sizeBytes);
     addEntryButton(entry, meta);
@@ -823,8 +908,12 @@ async function fetchDatasetDetails(relativePath) {
       throw new Error(payload?.message || "Could not load file details");
     }
     state.datasets.details = payload;
+    state.datasets.selectedHduIndex = Number.isFinite(payload?.fits?.defaultHduIndex)
+      ? payload.fits.defaultHduIndex
+      : ((payload?.fits?.hdus || []).find((hdu) => hdu.isSelectable)?.index ?? null);
   } catch (error) {
     state.datasets.detailsError = error?.message || "Could not load file details";
+    state.datasets.selectedHduIndex = null;
   } finally {
     state.datasets.detailsLoading = false;
     renderDatasetBrowser();
@@ -837,18 +926,19 @@ function selectDatasetEntry(entry) {
   }
   state.datasets.selectedEntry = entry;
   state.datasets.selectedPath = entry.path;
+  state.datasets.selectedHduIndex = null;
   fetchDatasetDetails(entry.path);
 }
 
 function confirmDatasetSelection() {
-  const relativePath = state.datasets.selectedPath;
+  const relativePath = selectedDatasetPathWithHdu();
   if (typeof relativePath !== "string" || !relativePath.trim()) {
     return;
   }
   state.datasets.activeDatasetPath = relativePath.trim();
   state.datasets.activeDatasetName = basenameFromPath(state.datasets.activeDatasetPath);
   closeDatasetBrowserModal();
-  openDatasetLoadingModal(state.datasets.activeDatasetName);
+  openDatasetLoadingModal(state.datasets.activeDatasetPath);
   if (!send({ type: "dataset.select", sessionId: state.sessionId, path: state.datasets.activeDatasetPath })) {
     closeDatasetLoadingModal();
     logEvent(`Dataset selected for next connect: ${state.datasets.activeDatasetName}`);
@@ -948,6 +1038,12 @@ elements.datasetBrowserModalBackdrop?.addEventListener("click", () => {
 
 elements.datasetOpenSelectedButton?.addEventListener("click", () => {
   confirmDatasetSelection();
+});
+
+elements.datasetHduSelect?.addEventListener("change", () => {
+  const nextValue = Number(elements.datasetHduSelect.value);
+  state.datasets.selectedHduIndex = Number.isFinite(nextValue) ? nextValue : null;
+  renderDatasetBrowser();
 });
 
 elements.authToken?.addEventListener("change", () => {

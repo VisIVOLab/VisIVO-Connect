@@ -7,6 +7,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from astropy.io import fits
 from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceCandidate, RTCIceServer, RTCSessionDescription
@@ -29,6 +30,7 @@ from backend.core.config import (
     resolve_dataset_path,
 )
 from backend.core.session import RemoteRenderSession, SessionManager
+from backend.data.importers import _parse_dataset_request, _select_fits_hdu
 from backend.transport.video_track import LatestFrameVideoTrack
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -472,14 +474,35 @@ def _dataset_file_details(relative_path: str | None) -> dict[str, Any]:
 
     hdus: list[dict[str, Any]] = []
     header_preview: dict[str, Any] = {}
+    default_hdu_index: int | None = None
     with fits.open(selected_file, memmap=True) as hdul:
+        try:
+            default_hdu_index, _ = _select_fits_hdu(hdul, None)
+        except ValueError:
+            default_hdu_index = None
         for index, hdu in enumerate(hdul):
             header = hdu.header
             shape = getattr(hdu, "shape", None)
             dtype = None
             data = getattr(hdu, "data", None)
+            ndim = int(np.ndim(data)) if data is not None else None
             if data is not None:
                 dtype = str(getattr(data, "dtype", None) or "")
+            hdu_header_preview: dict[str, Any] = {}
+            for key in (
+                "EXTNAME",
+                "OBJECT",
+                "BTYPE",
+                "BUNIT",
+                "CTYPE1",
+                "CTYPE2",
+                "CTYPE3",
+                "CUNIT1",
+                "CUNIT2",
+                "CUNIT3",
+            ):
+                if key in header:
+                    hdu_header_preview[key] = header[key]
             hdus.append(
                 {
                     "index": index,
@@ -488,6 +511,10 @@ def _dataset_file_details(relative_path: str | None) -> dict[str, Any]:
                     "shape": list(shape) if isinstance(shape, tuple) else None,
                     "dtype": dtype or None,
                     "isImage": bool(data is not None),
+                    "ndim": ndim,
+                    "isSelectable": bool(data is not None and ndim is not None and ndim >= 3),
+                    "isDefault": default_hdu_index == index,
+                    "headerPreview": hdu_header_preview,
                 }
             )
         if hdul:
@@ -512,6 +539,8 @@ def _dataset_file_details(relative_path: str | None) -> dict[str, Any]:
                     header_preview[key] = first_header[key]
     payload["fits"] = {
         "hduCount": len(hdus),
+        "selectableHduCount": sum(1 for hdu in hdus if hdu["isSelectable"]),
+        "defaultHduIndex": default_hdu_index,
         "hdus": hdus,
         "headerPreview": header_preview,
     }
@@ -522,17 +551,22 @@ def _resolve_requested_dataset_path(requested_dataset_path: str | None) -> str |
     candidate = (requested_dataset_path or "").strip()
     if candidate and config.dataset_root:
         try:
+            request = _parse_dataset_request(candidate)
             selected_file, _ = resolve_dataset_browser_path(
-                candidate,
+                str(request.path),
                 allowed_root=config.dataset_root,
                 expect_directory=False,
                 strict_exists=config.strict_dataset_path,
             )
-        except ConfigError:
+        except (ConfigError, ValueError):
             pass
         else:
+            parsed = urlsplit(candidate)
+            resolved_candidate = str(selected_file)
+            if parsed.fragment:
+                resolved_candidate = urlunsplit(("", "", str(selected_file), "", parsed.fragment))
             return resolve_dataset_path(
-                str(selected_file),
+                resolved_candidate,
                 default_path=config.dataset_path,
                 allowed_root=config.dataset_root,
                 strict_exists=config.strict_dataset_path,
@@ -1246,8 +1280,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 if msg_type in {"dataset.select", "dataset.switch"}:
                     phase = "dataset-switch"
                     selected_relative_path = payload.get("path", payload.get("relativePath"))
+                    request = _parse_dataset_request(str(selected_relative_path or ""))
                     selected_file, _ = resolve_dataset_browser_path(
-                        selected_relative_path,
+                        str(request.path),
                         allowed_root=config.dataset_root,
                         expect_directory=False,
                         strict_exists=True,
@@ -1260,8 +1295,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                             retryable=False,
                             details={"path": str(selected_relative_path or "")},
                         )
+                    parsed_selected = urlsplit(str(selected_relative_path or ""))
+                    dataset_candidate = str(selected_file)
+                    if parsed_selected.fragment:
+                        dataset_candidate = urlunsplit(("", "", str(selected_file), "", parsed_selected.fragment))
                     dataset_path = resolve_dataset_path(
-                        str(selected_file),
+                        dataset_candidate,
                         allowed_root=config.dataset_root,
                         strict_exists=True,
                     )

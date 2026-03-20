@@ -871,6 +871,24 @@ input {
   border: 1px solid rgba(140, 173, 211, 0.1);
 }
 
+.dataset-details-item[role="button"] {
+  cursor: pointer;
+}
+
+.dataset-details-item[role="button"]:focus-visible {
+  outline: 2px solid rgba(87, 215, 255, 0.5);
+  outline-offset: 2px;
+}
+
+.dataset-details-item-active {
+  border-color: rgba(87, 215, 255, 0.44);
+  background: rgba(9, 24, 38, 0.82);
+}
+
+.dataset-details-item-disabled {
+  opacity: 0.66;
+}
+
 .dataset-details-item-title {
   font-size: 0.88rem;
   font-weight: 700;
