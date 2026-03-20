@@ -36,6 +36,8 @@ const elements = {
   volumePaletteButtonName: document.getElementById("volumePaletteButtonName"),
   volumePaletteButtonSwatch: document.getElementById("volumePaletteButtonSwatch"),
   volumePaletteMenu: document.getElementById("volumePaletteMenu"),
+  volumePaletteSearch: document.getElementById("volumePaletteSearch"),
+  volumePaletteOptions: document.getElementById("volumePaletteOptions"),
   volumeScaleMode: document.getElementById("volumeScaleMode"),
   volumePalettePreview: document.getElementById("volumePalettePreview"),
   volumePalettePreviewCaption: document.getElementById("volumePalettePreviewCaption"),
@@ -218,6 +220,7 @@ const state = {
     paletteCatalog: [],
     palettePreviewColors: [],
     paletteMenuOpen: false,
+    paletteFilter: "",
     opacityScale: 1.8,
     sampleDistanceScale: null,
     sampleDistanceManual: false,
@@ -514,6 +517,11 @@ elements.volumePaletteButton.addEventListener("click", () => {
   setPaletteMenuOpen(!state.volume.paletteMenuOpen);
 });
 
+elements.volumePaletteSearch.addEventListener("input", () => {
+  state.volume.paletteFilter = (elements.volumePaletteSearch.value || "").trim().toLowerCase();
+  renderPaletteMenu();
+});
+
 elements.volumeScaleMode.addEventListener("change", () => {
   state.volume.scaleMode = elements.volumeScaleMode.value === "log" ? "log" : "linear";
   syncPalettePreview();
@@ -525,14 +533,13 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (!elements.volumePalettePicker.contains(event.target)) {
-    setPaletteMenuOpen(false);
+    closePaletteMenu();
   }
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.volume.paletteMenuOpen) {
-    setPaletteMenuOpen(false);
-    elements.volumePaletteButton.focus();
+    closePaletteMenu({ restoreFocus: true });
   }
 });
 
@@ -2040,10 +2047,22 @@ function renderPaletteMenu() {
   const palettes = Array.isArray(state.volume.availablePalettes) && state.volume.availablePalettes.length > 0
     ? state.volume.availablePalettes
     : ["Inferno"];
+  const filter = state.volume.paletteFilter;
+  const visiblePalettes = filter
+    ? palettes.filter((name) => name.toLowerCase().includes(filter))
+    : palettes;
   elements.volumePaletteButtonName.textContent = state.volume.palette || palettes[0];
   elements.volumePaletteButtonSwatch.style.background = paletteGradient(palettePreviewColorsFor(state.volume.palette));
-  elements.volumePaletteMenu.replaceChildren(
-    ...palettes.map((name) => {
+  elements.volumePaletteSearch.value = state.volume.paletteFilter;
+  elements.volumePaletteOptions.replaceChildren(
+    ...(visiblePalettes.length > 0 ? visiblePalettes : ["No matching palette"]).map((name) => {
+      if (name === "No matching palette") {
+        const empty = document.createElement("div");
+        empty.className = "palette-option";
+        empty.setAttribute("aria-disabled", "true");
+        empty.textContent = name;
+        return empty;
+      }
       const option = document.createElement("button");
       option.type = "button";
       option.className = "palette-option";
@@ -2067,7 +2086,7 @@ function renderPaletteMenu() {
           syncPalettePreview();
           sendRenderParams();
         }
-        setPaletteMenuOpen(false);
+        closePaletteMenu();
       });
       return option;
     })
@@ -2079,6 +2098,27 @@ function setPaletteMenuOpen(open) {
   elements.volumePaletteMenu.classList.toggle("hidden", !state.volume.paletteMenuOpen);
   elements.volumePaletteButton.dataset.open = state.volume.paletteMenuOpen ? "true" : "false";
   elements.volumePaletteButton.setAttribute("aria-expanded", state.volume.paletteMenuOpen ? "true" : "false");
+  if (state.volume.paletteMenuOpen) {
+    state.volume.paletteFilter = "";
+    renderPaletteMenu();
+    window.setTimeout(() => {
+      elements.volumePaletteSearch.focus();
+      elements.volumePaletteSearch.select();
+    }, 0);
+  } else {
+    state.volume.paletteFilter = "";
+    elements.volumePaletteSearch.value = "";
+  }
+}
+
+function closePaletteMenu({ restoreFocus = false } = {}) {
+  if (!state.volume.paletteMenuOpen) {
+    return;
+  }
+  setPaletteMenuOpen(false);
+  if (restoreFocus) {
+    elements.volumePaletteButton.focus();
+  }
 }
 
 function mergePaletteCatalog(catalog) {
@@ -2388,6 +2428,7 @@ function createSessionId() {
 
 function installControlPanelUI() {
   const setActiveTab = (tabKey) => {
+    closePaletteMenu();
     state.ui.activeTab = tabKey;
     controlTabButtons.forEach((button) => {
       const active = button.dataset.tabTarget === tabKey;

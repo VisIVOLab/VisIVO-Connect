@@ -278,7 +278,19 @@
                           <span class="palette-picker-button-name" id="volumePaletteButtonName">Inferno</span>
                           <span class="palette-picker-button-swatch" id="volumePaletteButtonSwatch" aria-hidden="true"></span>
                         </button>
-                        <div class="palette-picker-menu hidden" id="volumePaletteMenu" role="listbox" aria-label="Palette list"></div>
+                        <div class="palette-picker-menu hidden" id="volumePaletteMenu">
+                          <input
+                            class="palette-picker-search"
+                            id="volumePaletteSearch"
+                            type="text"
+                            placeholder="Filter palettes"
+                            spellcheck="false"
+                            autocomplete="off"
+                            autocapitalize="off"
+                            aria-label="Filter palettes"
+                          />
+                          <div id="volumePaletteOptions" role="listbox" aria-label="Palette list"></div>
+                        </div>
                       </div>
                     </label>
 

@@ -23,6 +23,10 @@
   box-sizing: border-box;
 }
 
+.hidden {
+  display: none !important;
+}
+
 html,
 body {
   width: 100%;
@@ -275,6 +279,7 @@ input {
 
 .palette-picker {
   position: relative;
+  z-index: 6;
 }
 
 .palette-picker-button {
@@ -332,6 +337,22 @@ input {
   background: rgba(10, 18, 28, 0.98);
   backdrop-filter: blur(14px);
   box-shadow: var(--shadow);
+}
+
+.palette-picker-search {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(140, 173, 211, 0.18);
+  color: var(--text);
+  background: rgba(6, 12, 20, 0.78);
+  outline: none;
+}
+
+.palette-picker-search:focus {
+  border-color: rgba(87, 215, 255, 0.48);
+  box-shadow: 0 0 0 3px rgba(87, 215, 255, 0.12);
 }
 
 .palette-option {
@@ -492,6 +513,12 @@ input {
 
 .control-card.compact {
   min-height: 0;
+}
+
+.tab-panel[data-tab-panel="logs"] .control-card.compact {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .card-heading {
@@ -677,8 +704,8 @@ button {
 }
 
 .event-log {
-  min-height: 240px;
-  height: min(46vh, 420px);
+  min-height: 0;
+  height: 100%;
   overflow: auto;
   display: grid;
   gap: 8px;
