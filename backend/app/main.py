@@ -48,6 +48,12 @@ def _sample_mean(values: list[float]) -> float | None:
     return float(sum(values) / len(values))
 
 
+def _is_relay_candidate(candidate: Any) -> bool:
+    if candidate is None:
+        return False
+    return str(getattr(candidate, "type", "")).strip().lower() == "relay"
+
+
 def _iter_urls(entry: dict[str, Any]) -> list[str]:
     urls = entry.get("urls")
     if isinstance(urls, str):
@@ -224,6 +230,25 @@ def _pc_config_from_env() -> RTCConfiguration:
     return RTCConfiguration(iceServers=servers)
 
 
+def _client_ice_servers(relay_only: bool) -> list[dict[str, Any]]:
+    if not relay_only:
+        return config.client_ice_servers
+    filtered: list[dict[str, Any]] = []
+    for entry in config.client_ice_servers:
+        if not isinstance(entry, dict):
+            continue
+        urls = [url for url in _iter_urls(entry) if url.lower().startswith(("turn:", "turns:"))]
+        if not urls:
+            continue
+        normalized = {"urls": urls}
+        if isinstance(entry.get("username"), str):
+            normalized["username"] = entry["username"]
+        if isinstance(entry.get("credential"), str):
+            normalized["credential"] = entry["credential"]
+        filtered.append(normalized)
+    return filtered
+
+
 def _normalize_description(payload: dict[str, Any]) -> RTCSessionDescription | None:
     if "sdp" in payload and isinstance(payload["sdp"], dict):
         inner = payload["sdp"]
@@ -256,14 +281,32 @@ async def _emit_state(ws: WebSocket, session: RemoteRenderSession, text: str | N
     await ws.send_json(session.state_payload(text=text))
 
 
-async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -> RTCPeerConnection:
+async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket, relay_only: bool = False) -> RTCPeerConnection:
     await _close_peer_connection(session)
 
     pc = RTCPeerConnection(_pc_config_from_env())
     session.peer_connection = pc
+    session.ice_relay_only = relay_only
+    attach_started_ns = time.time_ns()
+    session.latest_ice_metrics = {
+        "relayOnly": relay_only,
+        "candidateCount": 0,
+        "localCandidateCount": 0,
+        "remoteCandidateCount": 0,
+        "filteredLocalCandidateCount": 0,
+        "filteredRemoteCandidateCount": 0,
+        "timeToFirstCandidateMs": None,
+        "iceGatheringTimeMs": None,
+        "timeToSelectedCandidateMs": None,
+        "selectedCandidateType": None,
+        "selectedCandidatePair": None,
+        "iceConnectionState": pc.iceConnectionState,
+        "connectionState": pc.connectionState,
+    }
     stats_task: asyncio.Task[None] | None = None
     last_pair_summary = ""
     last_rtp_summary = ""
+    gathering_started_ns = time.time_ns()
 
     video_track = LatestFrameVideoTrack(session)
     pc.addTrack(video_track)
@@ -287,6 +330,20 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
                 remote_addr = _stat_value(remote, "address", _stat_value(remote, "ip", "?"))
                 remote_port = _stat_value(remote, "port", "?")
                 relay_selected = local_type == "relay" or remote_type == "relay"
+                if session.latest_ice_metrics.get("timeToSelectedCandidateMs") is None:
+                    session.latest_ice_metrics["timeToSelectedCandidateMs"] = max(
+                        0.0, (time.time_ns() - attach_started_ns) / 1e6
+                    )
+                    session.latest_ice_metrics["selectedCandidateType"] = (
+                        f"{local_type}/{remote_type}" if local_type or remote_type else None
+                    )
+                    session.latest_ice_metrics["selectedCandidatePair"] = {
+                        "localType": local_type,
+                        "remoteType": remote_type,
+                        "protocol": protocol,
+                        "localAddress": local_addr,
+                        "remoteAddress": remote_addr,
+                    }
                 pair_summary = (
                     f"ICE pair selected session={session.session_id} "
                     f"local={local_type}@{local_addr}:{local_port} "
@@ -327,6 +384,7 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
     async def on_connectionstatechange() -> None:
         nonlocal stats_task
         log.warning("PeerConnection state=%s session=%s", pc.connectionState, session.session_id)
+        session.latest_ice_metrics["connectionState"] = pc.connectionState
         if pc.connectionState in {"connecting", "connected"} and stats_task is None:
             stats_task = asyncio.create_task(_stats_loop())
         if pc.connectionState in {"failed", "closed"} and stats_task is not None:
@@ -337,6 +395,7 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
     async def on_iceconnectionstatechange() -> None:
         nonlocal stats_task
         log.warning("ICE state=%s session=%s", pc.iceConnectionState, session.session_id)
+        session.latest_ice_metrics["iceConnectionState"] = pc.iceConnectionState
         if pc.iceConnectionState in {"failed", "closed", "disconnected"} and stats_task is not None:
             stats_task.cancel()
             stats_task = None
@@ -344,11 +403,26 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
     @pc.on("icegatheringstatechange")
     async def on_icegatheringstatechange() -> None:
         log.warning("ICE gathering state=%s session=%s", pc.iceGatheringState, session.session_id)
+        if pc.iceGatheringState == "complete":
+            session.latest_ice_metrics["iceGatheringTimeMs"] = max(0.0, (time.time_ns() - gathering_started_ns) / 1e6)
 
     @pc.on("icecandidate")
     async def on_icecandidate(candidate: RTCIceCandidate | None) -> None:
         if candidate is None:
             log.warning("Local ICE candidate end-of-candidates session=%s", session.session_id)
+            return
+        session.latest_ice_metrics["localCandidateCount"] += 1
+        session.latest_ice_metrics["candidateCount"] += 1
+        if session.latest_ice_metrics.get("timeToFirstCandidateMs") is None:
+            session.latest_ice_metrics["timeToFirstCandidateMs"] = max(0.0, (time.time_ns() - attach_started_ns) / 1e6)
+        if relay_only and not _is_relay_candidate(candidate):
+            session.latest_ice_metrics["filteredLocalCandidateCount"] += 1
+            log.warning(
+                "Filtered local ICE candidate type=%s session=%s relayOnly=%s",
+                getattr(candidate, "type", "unknown"),
+                session.session_id,
+                relay_only,
+            )
             return
         candidate_str = candidate.candidate or ""
         candidate_ip = getattr(candidate, "ip", None) or getattr(candidate, "address", None) or "unknown"
@@ -376,7 +450,12 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    gather_wait_ms = int(os.getenv("VISIVO_ICE_GATHER_TIMEOUT_MS", "1500"))
+    gather_wait_ms = int(
+        os.getenv(
+            "VISIVO_ICE_GATHER_TIMEOUT_MS_RELAY" if relay_only else "VISIVO_ICE_GATHER_TIMEOUT_MS",
+            "200" if relay_only else "300",
+        )
+    )
     if gather_wait_ms > 0:
         gather_deadline = time.time() + (gather_wait_ms / 1000.0)
         while pc.iceGatheringState != "complete" and time.time() < gather_deadline:
@@ -391,7 +470,7 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket) -
         {
             "type": "offer",
             "description": {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp},
-            "iceServers": config.client_ice_servers,
+            "iceServers": _client_ice_servers(relay_only),
         }
     )
     return pc
@@ -437,6 +516,11 @@ async def _ws_stream_loop(
             frame_delivery_ms = (time.time_ns() - frame_packet.render_finished_ns) / 1e6
             session.stats.add_sample(session.stats.frame_delivery_latency_ms, frame_delivery_ms)
             session.stats.delivered_frames += 1
+            session.record_first_frame_delivery(
+                encode_ms=encode_ms,
+                send_ms=frame_delivery_ms,
+                delivered_ns=time.time_ns(),
+            )
             await ws.send_json(
                 {
                     "type": "ws-frame",
@@ -510,12 +594,24 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                     "sanitizeConvertMs": session.import_metrics.sanitize_convert_ms,
                     "vtkBuildMs": session.import_metrics.vtk_build_ms,
                     "fitsTotalMs": session.import_metrics.fits_total_ms,
+                    "cacheHit": session.import_metrics.cache_hit,
                 }
                 if session.import_metrics
                 else None
             ),
             "runtimeMetrics": {
                 "firstFrameLatencyMs": session.runtime_metrics.first_frame_latency_ms,
+                "firstFrameSessionInitMs": session.runtime_metrics.first_frame_session_init_ms,
+                "firstFrameSignalingSetupMs": session.runtime_metrics.first_frame_signaling_setup_ms,
+                "firstFrameFitsLoadMs": session.runtime_metrics.first_frame_fits_load_ms,
+                "firstFrameSanitizeConvertMs": session.runtime_metrics.first_frame_sanitize_convert_ms,
+                "firstFrameVtkBuildMs": session.runtime_metrics.first_frame_vtk_build_ms,
+                "firstFrameRendererWarmupMs": session.runtime_metrics.first_frame_renderer_warmup_ms,
+                "firstFrameRenderMs": session.runtime_metrics.first_frame_render_ms,
+                "firstFrameCaptureMs": session.runtime_metrics.first_frame_capture_ms,
+                "firstFrameConversionMs": session.runtime_metrics.first_frame_conversion_ms,
+                "firstFrameEncodeMs": session.runtime_metrics.first_frame_encode_ms,
+                "firstFrameSendMs": session.runtime_metrics.first_frame_send_ms,
                 "highQualityRenderTimeMs": session.runtime_metrics.high_quality_render_time_ms,
                 "interactiveFps": session.runtime_metrics.interactive_fps,
                 "memoryRssMb": session.runtime_metrics.memory_rss_mb,
@@ -532,6 +628,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "rtpPacingTimeMs": _sample_mean(session.stats.rtp_pacing_time_ms),
                 "totalFramePipelineTimeMs": _sample_mean(session.stats.total_frame_pipeline_time_ms),
             },
+            "iceMetrics": dict(session.latest_ice_metrics),
             "rendererDiagnostics": session.renderer.get_renderer_diagnostics(),
         }
     )
@@ -563,12 +660,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 requested_session_id = payload.get("sessionId")
                 dataset_path = payload.get("datasetPath") or config.dataset_path
                 force_ws_fallback = bool(payload.get("forceWsFallback"))
+                force_relay_only = bool(payload.get("forceRelayOnly")) or os.getenv("VISIVO_FORCE_RELAY_ONLY", "0") == "1"
                 msg_token = payload.get("token")
                 if config.auth_token and not (msg_token == config.auth_token or token == config.auth_token):
                     await ws.send_json({"type": "error", "message": "unauthorized"})
                     await ws.close(code=4401)
                     return
                 session = await sessions.get_or_create(requested_session_id, dataset_path=dataset_path)
+                session.mark_hello_received()
                 session.control_ws = ws
                 viewport = payload.get("viewport") or {}
                 session.resize(
@@ -576,8 +675,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     height=int(viewport.get("height", 720)),
                     dpr=float(viewport.get("dpr", 1.0)),
                 )
+                session.prime_first_frame()
                 if not force_ws_fallback:
-                    await _attach_peer_connection(session, ws)
+                    await _attach_peer_connection(session, ws, relay_only=force_relay_only)
                 else:
                     await _close_peer_connection(session)
                     if ws_stream_task is not None:
@@ -589,6 +689,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     ws_stream_task = asyncio.create_task(_ws_stream_loop(session, ws, 8.0))
                     await ws.send_json({"type": "ws-stream.started", "fps": 8.0, "sessionId": session.session_id})
                 await ws.send_json({"type": "stream-ready", "sessionId": session.session_id})
+                session.mark_stream_ready_sent()
                 await _emit_state(ws, session, text="Session connected")
                 continue
 
@@ -600,6 +701,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 description = _normalize_description(payload)
                 if description and session.peer_connection:
                     await session.peer_connection.setRemoteDescription(description)
+                    session.mark_remote_answer_set()
                 continue
 
             if msg_type in {"webrtc.stop", "rtc.stop"}:
@@ -609,6 +711,23 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             if msg_type in {"ice", "ice-candidate", "webrtc.ice"}:
                 candidate = _normalize_candidate(payload)
                 if candidate and session.peer_connection:
+                    session.latest_ice_metrics["remoteCandidateCount"] = int(
+                        session.latest_ice_metrics.get("remoteCandidateCount", 0)
+                    ) + 1
+                    session.latest_ice_metrics["candidateCount"] = int(
+                        session.latest_ice_metrics.get("candidateCount", 0)
+                    ) + 1
+                    if session.ice_relay_only and not _is_relay_candidate(candidate):
+                        session.latest_ice_metrics["filteredRemoteCandidateCount"] = int(
+                            session.latest_ice_metrics.get("filteredRemoteCandidateCount", 0)
+                        ) + 1
+                        log.warning(
+                            "Filtered remote ICE candidate type=%s session=%s relayOnly=%s",
+                            getattr(candidate, "type", "unknown"),
+                            session.session_id,
+                            session.ice_relay_only,
+                        )
+                        continue
                     candidate_str = getattr(candidate, "candidate", "") or ""
                     redacted_candidate = candidate_str[:180] + ("..." if len(candidate_str) > 180 else "")
                     candidate_ip = getattr(candidate, "ip", None) or getattr(candidate, "address", None) or "unknown"

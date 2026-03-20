@@ -57,6 +57,17 @@ const elements = {
   metricsVisualizationMode: document.getElementById("metricsVisualizationMode"),
   metricsDataset: document.getElementById("metricsDataset"),
   metricsFirstFrameLatency: document.getElementById("metricsFirstFrameLatency"),
+  metricsFirstFrameSessionInit: document.getElementById("metricsFirstFrameSessionInit"),
+  metricsFirstFrameSignalingSetup: document.getElementById("metricsFirstFrameSignalingSetup"),
+  metricsFirstFrameFitsLoad: document.getElementById("metricsFirstFrameFitsLoad"),
+  metricsFirstFrameSanitizeConvert: document.getElementById("metricsFirstFrameSanitizeConvert"),
+  metricsFirstFrameVtkBuild: document.getElementById("metricsFirstFrameVtkBuild"),
+  metricsFirstFrameRendererWarmup: document.getElementById("metricsFirstFrameRendererWarmup"),
+  metricsFirstFrameRender: document.getElementById("metricsFirstFrameRender"),
+  metricsFirstFrameCapture: document.getElementById("metricsFirstFrameCapture"),
+  metricsFirstFrameConversion: document.getElementById("metricsFirstFrameConversion"),
+  metricsFirstFrameEncode: document.getElementById("metricsFirstFrameEncode"),
+  metricsFirstFrameSend: document.getElementById("metricsFirstFrameSend"),
   metricsInteractiveFps: document.getElementById("metricsInteractiveFps"),
   metricsHighQualityRenderTime: document.getElementById("metricsHighQualityRenderTime"),
   metricsMemoryRss: document.getElementById("metricsMemoryRss"),
@@ -80,11 +91,22 @@ const elements = {
   metricsPipelineEncodeTime: document.getElementById("metricsPipelineEncodeTime"),
   metricsPipelinePacingTime: document.getElementById("metricsPipelinePacingTime"),
   metricsPipelineTotalTime: document.getElementById("metricsPipelineTotalTime"),
+  metricsIceRelayOnly: document.getElementById("metricsIceRelayOnly"),
+  metricsIceGatheringTime: document.getElementById("metricsIceGatheringTime"),
+  metricsIceFirstCandidate: document.getElementById("metricsIceFirstCandidate"),
+  metricsIceSelectedCandidateTime: document.getElementById("metricsIceSelectedCandidateTime"),
+  metricsIceSelectedCandidateType: document.getElementById("metricsIceSelectedCandidateType"),
+  metricsIceCandidateCount: document.getElementById("metricsIceCandidateCount"),
+  metricsIceCandidateSplit: document.getElementById("metricsIceCandidateSplit"),
+  metricsIceFilteredSplit: document.getElementById("metricsIceFilteredSplit"),
+  metricsIceConnectionState: document.getElementById("metricsIceConnectionState"),
+  metricsPcConnectionState: document.getElementById("metricsPcConnectionState"),
   metricsFitsOpen: document.getElementById("metricsFitsOpen"),
   metricsHduSelect: document.getElementById("metricsHduSelect"),
   metricsSanitizeConvert: document.getElementById("metricsSanitizeConvert"),
   metricsVtkBuild: document.getElementById("metricsVtkBuild"),
   metricsFitsTotal: document.getElementById("metricsFitsTotal"),
+  metricsFitsCacheHit: document.getElementById("metricsFitsCacheHit"),
   touchRotateSensitivity: document.getElementById("touchRotateSensitivity"),
   touchRotateSensitivityValue: document.getElementById("touchRotateSensitivityValue"),
   touchPanSensitivity: document.getElementById("touchPanSensitivity"),
@@ -540,6 +562,7 @@ function openSocket() {
       ua: navigator.userAgent,
       viewport: currentViewport(),
       renderMode: state.renderMode,
+      forceRelayOnly: state.rtc.forceRelayOnly,
       forceWsFallback: state.transport.forceWsFallback,
     });
     sendRenderParams();
@@ -2097,12 +2120,24 @@ function renderMetrics(payload) {
   const importMetrics = payload?.importMetrics || {};
   const renderer = payload?.rendererDiagnostics || {};
   const pipeline = payload?.pipelineMetrics || {};
+  const ice = payload?.iceMetrics || {};
   const datasetName = payload?.datasetName || payload?.datasetPath || "-";
 
   setText(elements.metricsSessionId, payload?.sessionId || state.sessionId || "-");
   setText(elements.metricsVisualizationMode, payload?.visualizationMode || "-");
   setText(elements.metricsDataset, datasetName);
   setText(elements.metricsFirstFrameLatency, formatMs(runtime.firstFrameLatencyMs));
+  setText(elements.metricsFirstFrameSessionInit, formatMs(runtime.firstFrameSessionInitMs));
+  setText(elements.metricsFirstFrameSignalingSetup, formatMs(runtime.firstFrameSignalingSetupMs));
+  setText(elements.metricsFirstFrameFitsLoad, formatMs(runtime.firstFrameFitsLoadMs));
+  setText(elements.metricsFirstFrameSanitizeConvert, formatMs(runtime.firstFrameSanitizeConvertMs));
+  setText(elements.metricsFirstFrameVtkBuild, formatMs(runtime.firstFrameVtkBuildMs));
+  setText(elements.metricsFirstFrameRendererWarmup, formatMs(runtime.firstFrameRendererWarmupMs));
+  setText(elements.metricsFirstFrameRender, formatMs(runtime.firstFrameRenderMs));
+  setText(elements.metricsFirstFrameCapture, formatMs(runtime.firstFrameCaptureMs));
+  setText(elements.metricsFirstFrameConversion, formatMs(runtime.firstFrameConversionMs));
+  setText(elements.metricsFirstFrameEncode, formatMs(runtime.firstFrameEncodeMs));
+  setText(elements.metricsFirstFrameSend, formatMs(runtime.firstFrameSendMs));
   setText(elements.metricsInteractiveFps, formatNumber(runtime.interactiveFps, "fps"));
   setText(elements.metricsHighQualityRenderTime, formatMs(runtime.highQualityRenderTimeMs));
   setText(elements.metricsMemoryRss, formatNumber(runtime.memoryRssMb, "MB"));
@@ -2126,12 +2161,29 @@ function renderMetrics(payload) {
   setText(elements.metricsPipelineEncodeTime, formatMs(pipeline.encodeTimeMs));
   setText(elements.metricsPipelinePacingTime, formatMs(pipeline.rtpPacingTimeMs));
   setText(elements.metricsPipelineTotalTime, formatMs(pipeline.totalFramePipelineTimeMs));
+  setText(elements.metricsIceRelayOnly, formatBoolean(ice.relayOnly));
+  setText(elements.metricsIceGatheringTime, formatMs(ice.iceGatheringTimeMs));
+  setText(elements.metricsIceFirstCandidate, formatMs(ice.timeToFirstCandidateMs));
+  setText(elements.metricsIceSelectedCandidateTime, formatMs(ice.timeToSelectedCandidateMs));
+  setText(elements.metricsIceSelectedCandidateType, ice.selectedCandidateType || "-");
+  setText(elements.metricsIceCandidateCount, formatInteger(ice.candidateCount));
+  setText(
+    elements.metricsIceCandidateSplit,
+    `${formatInteger(ice.localCandidateCount)}/${formatInteger(ice.remoteCandidateCount)}`
+  );
+  setText(
+    elements.metricsIceFilteredSplit,
+    `${formatInteger(ice.filteredLocalCandidateCount)}/${formatInteger(ice.filteredRemoteCandidateCount)}`
+  );
+  setText(elements.metricsIceConnectionState, ice.iceConnectionState || "-");
+  setText(elements.metricsPcConnectionState, ice.connectionState || "-");
 
   setText(elements.metricsFitsOpen, formatMs(importMetrics.fitsOpenMs));
   setText(elements.metricsHduSelect, formatMs(importMetrics.hduSelectMs));
   setText(elements.metricsSanitizeConvert, formatMs(importMetrics.sanitizeConvertMs));
   setText(elements.metricsVtkBuild, formatMs(importMetrics.vtkBuildMs));
   setText(elements.metricsFitsTotal, formatMs(importMetrics.fitsTotalMs));
+  setText(elements.metricsFitsCacheHit, formatBoolean(importMetrics.cacheHit));
 }
 
 function formatBoolean(value) {
@@ -2191,6 +2243,13 @@ function formatNumber(value, unit) {
     return "-";
   }
   return `${Number(value).toFixed(2)} ${unit}`;
+}
+
+function formatInteger(value) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+  return String(Math.round(Number(value)));
 }
 
 function buildWsUrl(raw, token) {

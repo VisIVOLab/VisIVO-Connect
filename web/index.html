@@ -346,6 +346,54 @@
                     </div>
                   </div>
 
+                  <h3 class="metrics-subtitle">First Frame Breakdown</h3>
+                  <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">Session init</span>
+                      <span class="metric-value" id="metricsFirstFrameSessionInit">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Signaling setup</span>
+                      <span class="metric-value" id="metricsFirstFrameSignalingSetup">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">FITS load</span>
+                      <span class="metric-value" id="metricsFirstFrameFitsLoad">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Sanitize / convert</span>
+                      <span class="metric-value" id="metricsFirstFrameSanitizeConvert">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">vtkImageData build</span>
+                      <span class="metric-value" id="metricsFirstFrameVtkBuild">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Renderer warmup</span>
+                      <span class="metric-value" id="metricsFirstFrameRendererWarmup">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">First render</span>
+                      <span class="metric-value" id="metricsFirstFrameRender">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">First capture</span>
+                      <span class="metric-value" id="metricsFirstFrameCapture">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">First conversion</span>
+                      <span class="metric-value" id="metricsFirstFrameConversion">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">First encode</span>
+                      <span class="metric-value" id="metricsFirstFrameEncode">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">First send</span>
+                      <span class="metric-value" id="metricsFirstFrameSend">-</span>
+                    </div>
+                  </div>
+
                   <h3 class="metrics-subtitle">Renderer Capability</h3>
                   <div class="metrics-grid">
                     <div class="metric-row">
@@ -434,6 +482,50 @@
                     </div>
                   </div>
 
+                  <h3 class="metrics-subtitle">ICE / Signaling</h3>
+                  <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">Relay only</span>
+                      <span class="metric-value" id="metricsIceRelayOnly">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">ICE gathering</span>
+                      <span class="metric-value" id="metricsIceGatheringTime">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Time to first candidate</span>
+                      <span class="metric-value" id="metricsIceFirstCandidate">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Time to selected pair</span>
+                      <span class="metric-value" id="metricsIceSelectedCandidateTime">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Selected candidate type</span>
+                      <span class="metric-value" id="metricsIceSelectedCandidateType">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Candidates total</span>
+                      <span class="metric-value" id="metricsIceCandidateCount">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Local / remote</span>
+                      <span class="metric-value" id="metricsIceCandidateSplit">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Filtered local / remote</span>
+                      <span class="metric-value" id="metricsIceFilteredSplit">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">ICE state</span>
+                      <span class="metric-value" id="metricsIceConnectionState">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">PC state</span>
+                      <span class="metric-value" id="metricsPcConnectionState">-</span>
+                    </div>
+                  </div>
+
                   <h3 class="metrics-subtitle">FITS Import</h3>
                   <div class="metrics-grid">
                     <div class="metric-row">
@@ -456,6 +548,10 @@
                       <span class="metric-label">fits_total_ms</span>
                       <span class="metric-value" id="metricsFitsTotal">-</span>
                     </div>
+                    <div class="metric-row">
+                      <span class="metric-label">fits_cache_hit</span>
+                      <span class="metric-value" id="metricsFitsCacheHit">-</span>
+                    </div>
                   </div>
                 </section>
               </section>
@@ -475,6 +571,6 @@
       </main>
     </div>
 
-    <script type="module" src="/web/app.js?v=20260320c"></script>
+    <script type="module" src="/web/app.js?v=20260320e"></script>
   </body>
 </html>

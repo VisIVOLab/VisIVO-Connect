@@ -18,11 +18,23 @@ class FitsImportMetrics:
     sanitize_convert_ms: float
     vtk_build_ms: float
     fits_total_ms: float
+    cache_hit: bool = False
 
 
 @dataclass
 class SessionRuntimeMetrics:
     first_frame_latency_ms: float | None = None
+    first_frame_session_init_ms: float | None = None
+    first_frame_signaling_setup_ms: float | None = None
+    first_frame_fits_load_ms: float | None = None
+    first_frame_sanitize_convert_ms: float | None = None
+    first_frame_vtk_build_ms: float | None = None
+    first_frame_renderer_warmup_ms: float | None = None
+    first_frame_render_ms: float | None = None
+    first_frame_capture_ms: float | None = None
+    first_frame_conversion_ms: float | None = None
+    first_frame_encode_ms: float | None = None
+    first_frame_send_ms: float | None = None
     high_quality_render_time_ms: float = 0.0
     interactive_fps: float | None = None
     memory_rss_mb: float | None = None

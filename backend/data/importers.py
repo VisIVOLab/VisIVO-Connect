@@ -21,6 +21,8 @@ from backend.core.observability import (
 _NUMPY_SUFFIXES = {".npy"}
 _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 _FITS_GZIP_SUFFIXES = (".fits.gz", ".fit.gz", ".fts.gz")
+_FITS_CACHE_MAX_ENTRIES = 2
+_fits_cube_cache: dict[tuple[str, int | str | None, int, int], np.ndarray] = {}
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,25 @@ def _load_numpy(path: Path) -> vtk.vtkImageData:
 
 def _load_fits(path: Path, fits_hdu: int | str | None) -> vtk.vtkImageData:
     total_started_ns = perf_counter_ns()
+    cache_key = _fits_cache_key(path, fits_hdu)
+    cached_cube = _fits_cube_cache.get(cache_key)
+    if cached_cube is not None:
+        vtk_build_started_ns = perf_counter_ns()
+        image_data = _numpy_to_vtk_image_data(cached_cube)
+        vtk_build_finished_ns = perf_counter_ns()
+        total_finished_ns = perf_counter_ns()
+        record_last_fits_import_metrics(
+            FitsImportMetrics(
+                fits_open_ms=0.0,
+                hdu_select_ms=0.0,
+                sanitize_convert_ms=0.0,
+                vtk_build_ms=(vtk_build_finished_ns - vtk_build_started_ns) / 1e6,
+                fits_total_ms=(total_finished_ns - total_started_ns) / 1e6,
+                cache_hit=True,
+            )
+        )
+        return image_data
+
     open_started_ns = perf_counter_ns()
     with fits.open(path, memmap=False) as hdul:
         open_finished_ns = perf_counter_ns()
@@ -134,6 +155,7 @@ def _load_fits(path: Path, fits_hdu: int | str | None) -> vtk.vtkImageData:
         sanitize_started_ns = perf_counter_ns()
         cube = _sanitize_fits_cube(cube, hdu.header)
         sanitize_finished_ns = perf_counter_ns()
+        _store_fits_cache(cache_key, cube)
 
         vtk_build_started_ns = perf_counter_ns()
         image_data = _numpy_to_vtk_image_data(cube)
@@ -147,9 +169,24 @@ def _load_fits(path: Path, fits_hdu: int | str | None) -> vtk.vtkImageData:
             sanitize_convert_ms=(sanitize_finished_ns - sanitize_started_ns) / 1e6,
             vtk_build_ms=(vtk_build_finished_ns - vtk_build_started_ns) / 1e6,
             fits_total_ms=(total_finished_ns - total_started_ns) / 1e6,
+            cache_hit=False,
         )
     )
     return image_data
+
+
+def _fits_cache_key(path: Path, fits_hdu: int | str | None) -> tuple[str, int | str | None, int, int]:
+    stat = path.stat()
+    return (str(path.resolve()), fits_hdu, int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _store_fits_cache(cache_key: tuple[str, int | str | None, int, int], cube: np.ndarray) -> None:
+    if cache_key in _fits_cube_cache:
+        _fits_cube_cache.pop(cache_key, None)
+    _fits_cube_cache[cache_key] = cube
+    while len(_fits_cube_cache) > _FITS_CACHE_MAX_ENTRIES:
+        oldest_key = next(iter(_fits_cube_cache))
+        _fits_cube_cache.pop(oldest_key, None)
 
 
 def _select_fits_hdu(hdul: fits.HDUList, selector: int | str | None) -> tuple[int, Any]:
@@ -186,21 +223,21 @@ def _sanitize_fits_cube(data: np.ndarray, header: fits.Header) -> np.ndarray:
         raise ValueError(f"Complex FITS cubes are not supported (dtype={arr.dtype})")
 
     blank = header.get("BLANK")
-    if blank is not None and np.issubdtype(arr.dtype, np.integer):
-        # BLANK is valid only for integer FITS; treat those pixels as missing.
-        try:
-            arr = arr.astype(np.float32, copy=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Unsupported FITS cube dtype {arr.dtype}") from exc
-        arr[arr == float(blank)] = np.nan
-    else:
-        try:
-            arr = arr.astype(np.float32, copy=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Unsupported FITS cube dtype {arr.dtype}") from exc
+    try:
+        needs_float_copy = arr.dtype != np.float32
+        arr = arr.astype(np.float32, copy=needs_float_copy)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Unsupported FITS cube dtype {arr.dtype}") from exc
 
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    return np.ascontiguousarray(arr)
+    if blank is not None and np.issubdtype(data.dtype, np.integer):
+        arr[arr == float(blank)] = np.nan
+
+    if not arr.flags.c_contiguous:
+        arr = np.ascontiguousarray(arr)
+
+    if not np.isfinite(arr).all():
+        np.nan_to_num(arr, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return arr
 
 
 def _reduce_cube_to_first_3_axes(data: np.ndarray) -> np.ndarray:

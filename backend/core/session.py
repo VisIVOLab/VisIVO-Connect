@@ -32,6 +32,7 @@ class RemoteRenderSession:
         self.session_id = str(uuid.uuid4())
         self._session_started_ns = time.time_ns()
         self.renderer = VTKDatacubeRenderer(dataset_path=dataset_path)
+        self._session_initialized_ns = time.time_ns()
         self.viewport = Viewport()
 
         # Quality mode (interactive/high-quality) is independent from visualization mode.
@@ -60,6 +61,11 @@ class RemoteRenderSession:
 
         self.peer_connection: RTCPeerConnection | None = None
         self.control_ws: Any | None = None
+        self.hello_received_ns: int | None = None
+        self.stream_ready_sent_ns: int | None = None
+        self.remote_answer_set_ns: int | None = None
+        self.ice_relay_only: bool = False
+        self.latest_ice_metrics: dict[str, Any] = {}
 
         self.request_render()
 
@@ -262,6 +268,34 @@ class RemoteRenderSession:
             payload["text"] = text
         return payload
 
+    def mark_hello_received(self) -> None:
+        if self.hello_received_ns is None:
+            self.hello_received_ns = time.time_ns()
+            self.runtime_metrics.first_frame_session_init_ms = max(
+                0.0, (self._session_initialized_ns - self._session_started_ns) / 1e6
+            )
+            if self.import_metrics is not None:
+                self.runtime_metrics.first_frame_fits_load_ms = self.import_metrics.fits_total_ms
+                self.runtime_metrics.first_frame_sanitize_convert_ms = self.import_metrics.sanitize_convert_ms
+                self.runtime_metrics.first_frame_vtk_build_ms = self.import_metrics.vtk_build_ms
+                self.runtime_metrics.first_frame_renderer_warmup_ms = max(
+                    0.0,
+                    self.runtime_metrics.first_frame_session_init_ms - self.import_metrics.fits_total_ms,
+                )
+
+    def mark_stream_ready_sent(self) -> None:
+        if self.stream_ready_sent_ns is None:
+            self.stream_ready_sent_ns = time.time_ns()
+
+    def mark_remote_answer_set(self) -> None:
+        if self.remote_answer_set_ns is None:
+            self.remote_answer_set_ns = time.time_ns()
+
+    def prime_first_frame(self) -> None:
+        if self._latest_frame is not None:
+            return
+        self.render_if_needed(force=True)
+
     def latest_frame(self) -> FramePacket | None:
         return self._latest_frame
 
@@ -315,6 +349,25 @@ class RemoteRenderSession:
         self._last_render_finished_ns = finished_ns
         self._dirty = False
         return self._latest_frame
+
+    def record_first_frame_delivery(self, *, encode_ms: float, send_ms: float, delivered_ns: int) -> None:
+        if self.runtime_metrics.first_frame_render_ms is not None:
+            return
+        pipeline = dict(self.latest_pipeline_metrics)
+        self.runtime_metrics.first_frame_render_ms = float(pipeline.get("renderTimeMs", 0.0))
+        self.runtime_metrics.first_frame_capture_ms = float(pipeline.get("frameCaptureReadbackTimeMs", 0.0))
+        self.runtime_metrics.first_frame_conversion_ms = float(pipeline.get("frameConversionTimeMs", 0.0))
+        self.runtime_metrics.first_frame_encode_ms = float(encode_ms)
+        self.runtime_metrics.first_frame_send_ms = float(send_ms)
+        if self.remote_answer_set_ns is not None:
+            self.runtime_metrics.first_frame_signaling_setup_ms = max(
+                0.0, (self.remote_answer_set_ns - self._session_started_ns) / 1e6
+            )
+        elif self.stream_ready_sent_ns is not None:
+            self.runtime_metrics.first_frame_signaling_setup_ms = max(
+                0.0, (self.stream_ready_sent_ns - self._session_started_ns) / 1e6
+            )
+        self.runtime_metrics.first_frame_latency_ms = max(0.0, (delivered_ns - self._session_started_ns) / 1e6)
 
     def _adapt_interactive_quality(self, render_ms: float) -> None:
         if self.mode != "interactive":

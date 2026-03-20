@@ -123,6 +123,11 @@ class LatestFrameVideoTrack(VideoStreamTrack):
             delivery_ms = (time.time_ns() - frame_packet.render_finished_ns) / 1e6
             self.session.stats.add_sample(self.session.stats.frame_delivery_latency_ms, delivery_ms)
             self.session.stats.delivered_frames += 1
+            self.session.record_first_frame_delivery(
+                encode_ms=encode_ms,
+                send_ms=delivery_ms,
+                delivered_ns=time.time_ns(),
+            )
             if not self._first_frame_logged:
                 self._first_frame_logged = True
                 self._log.warning(
