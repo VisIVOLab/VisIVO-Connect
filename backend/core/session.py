@@ -252,6 +252,7 @@ class RemoteRenderSession:
             "visualizationMode": self.visualization.mode,
             "isoValue": self.visualization.iso_value,
             "volume": self.renderer.get_volume_params(),
+            "rendererDiagnostics": self.renderer.get_renderer_diagnostics(),
         }
         scalar_lo, scalar_hi = self.renderer.get_scalar_range()
         payload["isoRangeMin"] = scalar_lo

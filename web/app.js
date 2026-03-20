@@ -60,6 +60,16 @@ const elements = {
   metricsInteractiveFps: document.getElementById("metricsInteractiveFps"),
   metricsHighQualityRenderTime: document.getElementById("metricsHighQualityRenderTime"),
   metricsMemoryRss: document.getElementById("metricsMemoryRss"),
+  metricsRenderPath: document.getElementById("metricsRenderPath"),
+  metricsCapabilityProfile: document.getElementById("metricsCapabilityProfile"),
+  metricsRenderBackend: document.getElementById("metricsRenderBackend"),
+  metricsVolumeMapper: document.getElementById("metricsVolumeMapper"),
+  metricsOpenGLVendor: document.getElementById("metricsOpenGLVendor"),
+  metricsOpenGLRenderer: document.getElementById("metricsOpenGLRenderer"),
+  metricsOpenGLVersion: document.getElementById("metricsOpenGLVersion"),
+  metricsGpuOffscreen: document.getElementById("metricsGpuOffscreen"),
+  metricsCpuFallback: document.getElementById("metricsCpuFallback"),
+  metricsFallbackReason: document.getElementById("metricsFallbackReason"),
   metricsFitsOpen: document.getElementById("metricsFitsOpen"),
   metricsHduSelect: document.getElementById("metricsHduSelect"),
   metricsSanitizeConvert: document.getElementById("metricsSanitizeConvert"),
@@ -2075,6 +2085,7 @@ function buildMetricsUrl() {
 function renderMetrics(payload) {
   const runtime = payload?.runtimeMetrics || {};
   const importMetrics = payload?.importMetrics || {};
+  const renderer = payload?.rendererDiagnostics || {};
   const datasetName = payload?.datasetName || payload?.datasetPath || "-";
 
   setText(elements.metricsSessionId, payload?.sessionId || state.sessionId || "-");
@@ -2084,12 +2095,32 @@ function renderMetrics(payload) {
   setText(elements.metricsInteractiveFps, formatNumber(runtime.interactiveFps, "fps"));
   setText(elements.metricsHighQualityRenderTime, formatMs(runtime.highQualityRenderTimeMs));
   setText(elements.metricsMemoryRss, formatNumber(runtime.memoryRssMb, "MB"));
+  setText(elements.metricsRenderPath, renderer.selectedRenderPath || "-");
+  setText(elements.metricsCapabilityProfile, renderer.capabilityProfile || "-");
+  setText(elements.metricsRenderBackend, renderer.renderWindowBackend || "-");
+  setText(elements.metricsVolumeMapper, renderer.volumeMapperClass || renderer.activeMapper || "-");
+  setText(elements.metricsOpenGLVendor, renderer.openGLVendor || "-");
+  setText(elements.metricsOpenGLRenderer, renderer.openGLRenderer || "-");
+  setText(elements.metricsOpenGLVersion, renderer.openGLVersion || "-");
+  setText(elements.metricsGpuOffscreen, formatBoolean(renderer.gpuOffscreenAvailable));
+  setText(elements.metricsCpuFallback, formatBoolean(renderer.cpuFallbackAvailable));
+  setText(elements.metricsFallbackReason, renderer.fallbackReason || "-");
 
   setText(elements.metricsFitsOpen, formatMs(importMetrics.fitsOpenMs));
   setText(elements.metricsHduSelect, formatMs(importMetrics.hduSelectMs));
   setText(elements.metricsSanitizeConvert, formatMs(importMetrics.sanitizeConvertMs));
   setText(elements.metricsVtkBuild, formatMs(importMetrics.vtkBuildMs));
   setText(elements.metricsFitsTotal, formatMs(importMetrics.fitsTotalMs));
+}
+
+function formatBoolean(value) {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  return "-";
 }
 
 function setMetricsStatus(status) {

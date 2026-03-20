@@ -113,6 +113,9 @@ class SessionFakeRenderer:
 
     def get_volume_params(self) -> dict[str, Any]:
         return {
+            "activeMapper": "smart",
+            "selectedRenderPath": "cpu",
+            "capabilityProfile": "cpu-safe",
             "renderMode": "composite",
             "opacityScale": 1.0,
             "sampleDistanceScale": self.volume_mapper.sample_distance,
@@ -124,6 +127,41 @@ class SessionFakeRenderer:
             "slicePosition": 0.5,
             "cropping": {"enabled": False, "bounds": [0, 1, 0, 1, 0, 1]},
         }
+
+    def get_runtime_capabilities(self) -> dict[str, Any]:
+        return {
+            "renderWindowBackend": "fake",
+            "renderWindowRequest": "fake",
+            "offscreenEnabled": True,
+            "useOffscreenBuffers": True,
+            "openGLVendor": "fake",
+            "openGLRenderer": "fake",
+            "openGLVersion": "fake",
+            "openglAvailable": True,
+            "volumeMapperClass": "FakeVolumeMapper",
+            "gpuMapperClass": None,
+            "cpuMapperClass": "FakeVolumeMapper",
+            "gpuMapperAvailable": False,
+            "cpuFallbackAvailable": True,
+            "gpuOffscreenAvailable": False,
+            "selectedRenderPath": "cpu",
+            "capabilityProfile": "cpu-safe",
+            "fallbackReason": "fake-renderer",
+        }
+
+    def get_renderer_diagnostics(self) -> dict[str, Any]:
+        diagnostics = self.get_runtime_capabilities()
+        diagnostics.update(
+            {
+                "activeMapper": "smart",
+                "selectedRenderPath": "cpu",
+                "capabilityProfile": "cpu-safe",
+                "visualizationMode": self.visualization_mode,
+                "volumeRenderMode": "composite",
+                "stabilityMode": self.stability_mode,
+            }
+        )
+        return diagnostics
 
     def set_volume_params(self, params: dict[str, Any]) -> None:
         self.volume_params = dict(params)

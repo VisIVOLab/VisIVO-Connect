@@ -37,6 +37,10 @@ class VTKDatacubeRenderer:
         self._render_window_backend = "unknown"
         self._render_window_request = os.getenv("VISIVO_VTK_RENDER_WINDOW", "auto").strip().lower()
         self._closed = False
+        self._capability_profile_name = "cpu-safe"
+        self._selected_render_path = "cpu"
+        self._fallback_reason: str | None = None
+        self._runtime_capabilities: dict[str, Any] = {}
 
         self.renderer = vtk.vtkRenderer()
         self.render_window = self._create_render_window()
@@ -54,12 +58,10 @@ class VTKDatacubeRenderer:
         self.window_to_image.ReadFrontBufferOff()
 
         mapper_cls = getattr(vtk, "vtkGPUVolumeRayCastMapper", None)
-        if mapper_cls is None:
-            raise RuntimeError("vtkGPUVolumeRayCastMapper is required but not available in this VTK build")
-        self.gpu_volume_mapper = mapper_cls()
+        self.gpu_volume_mapper = mapper_cls() if mapper_cls is not None else None
         self.cpu_fallback_mapper = vtk.vtkSmartVolumeMapper()
-        self.volume_mapper = self.gpu_volume_mapper
-        self._active_mapper_name = "gpu"
+        self.volume_mapper = self.cpu_fallback_mapper
+        self._active_mapper_name = "smart"
         self._black_frame_streak = 0
         self._black_frame_streak_fallback = 0
         self._dark_frame_streak_total = 0
@@ -101,15 +103,20 @@ class VTKDatacubeRenderer:
         )
 
         self._configure_scene()
-        self.current_profile: QualityProfile = HIGH_QUALITY_PROFILE
+        self._detect_runtime_capabilities()
+        self.current_profile: QualityProfile = (
+            HIGH_QUALITY_PROFILE if self._capability_profile_name == "gpu-high" else INTERACTIVE_PROFILE
+        )
         self.user_render_scale = 1.0
         self.interactive_boost = 1.0
         self.set_profile(self.current_profile)
         self.set_visualization_mode("volume")
         self._log.warning(
-            "Renderer initialized backend=%s request=%s mapper=%s mode=%s",
+            "Renderer initialized backend=%s request=%s path=%s profile=%s mapper=%s mode=%s",
             self._render_window_backend,
             self._render_window_request,
+            self._selected_render_path,
+            self._capability_profile_name,
             self._active_mapper_name,
             self.visualization_mode,
         )
@@ -211,7 +218,8 @@ class VTKDatacubeRenderer:
             self._log.exception("Failed to compute dataset scalar summary")
 
     def _configure_volume_pipeline(self, image_data: vtk.vtkImageData) -> None:
-        self._configure_mapper(self.gpu_volume_mapper, image_data)
+        if self.gpu_volume_mapper is not None:
+            self._configure_mapper(self.gpu_volume_mapper, image_data)
         self._configure_mapper(self.cpu_fallback_mapper, image_data)
 
         self._configure_volume_transfer_functions(image_data)
@@ -246,15 +254,113 @@ class VTKDatacubeRenderer:
         if mapper_name == self._active_mapper_name:
             return
         if mapper_name == "gpu":
+            if self.gpu_volume_mapper is None:
+                self._fallback_reason = "gpu-mapper-unavailable"
+                self._log.warning("GPU mapper requested but unavailable; staying on CPU-safe path")
+                return
             self.volume_mapper = self.gpu_volume_mapper
+            self._selected_render_path = "gpu"
         else:
             self.volume_mapper = self.cpu_fallback_mapper
+            self._selected_render_path = "cpu"
         self.volume.SetMapper(self.volume_mapper)
         self._active_mapper_name = mapper_name
         self._apply_volume_render_mode()
         self._apply_cropping()
-        self.set_profile(self.current_profile)
+        if hasattr(self, "current_profile"):
+            self.set_profile(self.current_profile)
         self._log.warning("Switched volume mapper to %s", mapper_name)
+
+    def _detect_runtime_capabilities(self) -> None:
+        vendor = ""
+        renderer = ""
+        version = ""
+        probe_error: str | None = None
+        try:
+            self.render_window.Render()
+            vendor = self._safe_window_string("GetOpenGLVendor")
+            renderer = self._safe_window_string("GetOpenGLRenderer")
+            version = self._safe_window_string("GetOpenGLVersion")
+        except Exception as exc:  # pragma: no cover - backend-specific probe path
+            probe_error = str(exc)
+            self._log.warning("Renderer capability probe render failed: %s", exc)
+
+        offscreen_enabled = bool(
+            hasattr(self.render_window, "GetOffScreenRendering") and self.render_window.GetOffScreenRendering()
+        )
+        use_offscreen_buffers = bool(
+            hasattr(self.render_window, "GetUseOffScreenBuffers") and self.render_window.GetUseOffScreenBuffers()
+        )
+        gpu_mapper_available = self.gpu_volume_mapper is not None
+        cpu_fallback_available = self.cpu_fallback_mapper is not None
+        opengl_available = any([vendor, renderer, version])
+        gpu_offscreen_available = bool(gpu_mapper_available and offscreen_enabled and opengl_available)
+
+        if gpu_offscreen_available:
+            self._switch_active_mapper("gpu")
+            if self._render_window_backend == "vtkEGLRenderWindow" and not self.stability_mode:
+                capability_profile = "gpu-high"
+            else:
+                capability_profile = "gpu-balanced"
+            fallback_reason = None
+        else:
+            self._switch_active_mapper("smart")
+            capability_profile = "cpu-safe"
+            if probe_error:
+                fallback_reason = f"probe-error:{probe_error}"
+            elif not gpu_mapper_available:
+                fallback_reason = "gpu-mapper-unavailable"
+            elif not offscreen_enabled:
+                fallback_reason = "offscreen-unavailable"
+            elif not opengl_available:
+                fallback_reason = "opengl-unavailable"
+            else:
+                fallback_reason = "gpu-offscreen-unavailable"
+
+        self._capability_profile_name = capability_profile
+        self._fallback_reason = fallback_reason
+        self._runtime_capabilities = {
+            "renderWindowBackend": self._render_window_backend,
+            "renderWindowRequest": self._render_window_request,
+            "offscreenEnabled": offscreen_enabled,
+            "useOffscreenBuffers": use_offscreen_buffers,
+            "openGLVendor": vendor or None,
+            "openGLRenderer": renderer or None,
+            "openGLVersion": version or None,
+            "openglAvailable": opengl_available,
+            "volumeMapperClass": self.volume_mapper.GetClassName() if self.volume_mapper is not None else None,
+            "gpuMapperClass": self.gpu_volume_mapper.GetClassName() if self.gpu_volume_mapper is not None else None,
+            "cpuMapperClass": self.cpu_fallback_mapper.GetClassName() if self.cpu_fallback_mapper is not None else None,
+            "gpuMapperAvailable": gpu_mapper_available,
+            "cpuFallbackAvailable": cpu_fallback_available,
+            "gpuOffscreenAvailable": gpu_offscreen_available,
+            "selectedRenderPath": self._selected_render_path,
+            "capabilityProfile": self._capability_profile_name,
+            "fallbackReason": self._fallback_reason,
+        }
+        self._log.warning(
+            "Renderer capabilities backend=%s vendor=%s renderer=%s version=%s gpuOffscreen=%s cpuFallback=%s profile=%s path=%s mapper=%s fallback=%s",
+            self._render_window_backend,
+            vendor or "unknown",
+            renderer or "unknown",
+            version or "unknown",
+            gpu_offscreen_available,
+            cpu_fallback_available,
+            self._capability_profile_name,
+            self._selected_render_path,
+            self._runtime_capabilities["volumeMapperClass"] or "unknown",
+            self._fallback_reason or "none",
+        )
+
+    def _safe_window_string(self, method_name: str) -> str:
+        method = getattr(self.render_window, method_name, None)
+        if not callable(method):
+            return ""
+        try:
+            value = method()
+        except Exception:
+            return ""
+        return str(value).strip()
 
     def _configure_slice_pipeline(self, image_data: vtk.vtkImageData) -> None:
         self.slice_mapper.SetInputData(image_data)
@@ -380,6 +486,8 @@ class VTKDatacubeRenderer:
         slice_position = 0.5 if self.slice_index is None else (self.slice_index - lo) / span
         return {
             "activeMapper": self._active_mapper_name,
+            "selectedRenderPath": self._selected_render_path,
+            "capabilityProfile": self._capability_profile_name,
             "renderMode": self.volume_render_mode,
             "opacityScale": self.volume_opacity_scale,
             "sampleDistanceScale": self.volume_sample_distance_scale_override,
@@ -394,6 +502,23 @@ class VTKDatacubeRenderer:
                 "bounds": list(self.cropping_bounds_norm),
             },
         }
+
+    def get_runtime_capabilities(self) -> dict[str, Any]:
+        return dict(self._runtime_capabilities)
+
+    def get_renderer_diagnostics(self) -> dict[str, Any]:
+        diagnostics = self.get_runtime_capabilities()
+        diagnostics.update(
+            {
+                "activeMapper": self._active_mapper_name,
+                "selectedRenderPath": self._selected_render_path,
+                "capabilityProfile": self._capability_profile_name,
+                "visualizationMode": self.visualization_mode,
+                "volumeRenderMode": self.volume_render_mode,
+                "stabilityMode": self.stability_mode,
+            }
+        )
+        return diagnostics
 
     def set_iso_value(self, iso_value: float | None) -> None:
         if iso_value is None:

@@ -164,6 +164,10 @@ Session metrics:
 
 - `GET /api/metrics/<sessionId>`
 - if `VISIVO_METRICS_TOKEN` is set: `GET /api/metrics/<sessionId>?token=<token>`
+- includes `rendererDiagnostics` with capability-based runtime selection:
+  `renderWindowBackend`, `openGLVendor`, `openGLRenderer`, `openGLVersion`,
+  `volumeMapperClass`, `gpuOffscreenAvailable`, `cpuFallbackAvailable`,
+  `selectedRenderPath`, `capabilityProfile`, `fallbackReason`
 
 Burst input test:
 

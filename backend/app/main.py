@@ -501,6 +501,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "interactiveFps": session.runtime_metrics.interactive_fps,
                 "memoryRssMb": session.runtime_metrics.memory_rss_mb,
             },
+            "rendererDiagnostics": session.renderer.get_renderer_diagnostics(),
         }
     )
 
