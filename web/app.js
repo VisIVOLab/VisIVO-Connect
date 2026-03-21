@@ -13,6 +13,10 @@ const elements = {
   viewportValue: document.getElementById("viewportValue"),
   wsUrl: document.getElementById("wsUrl"),
   authToken: document.getElementById("authToken"),
+  restorePreviousSession: document.getElementById("restorePreviousSession"),
+  savedSessionStatus: document.getElementById("savedSessionStatus"),
+  restoreSavedSessionButton: document.getElementById("restoreSavedSessionButton"),
+  clearSavedSessionButton: document.getElementById("clearSavedSessionButton"),
   connectButton: document.getElementById("connectButton"),
   disconnectButton: document.getElementById("disconnectButton"),
   fullscreenButton: document.getElementById("fullscreenButton"),
@@ -304,6 +308,17 @@ const state = {
     loadingModalOpen: false,
     loadingStatus: "",
     loadingSteps: [],
+    restoredMessage: "",
+    restoredTone: "ok",
+  },
+  persistence: {
+    storageKey: "visivo-connect.state.v1",
+    preferenceKey: "visivo-connect.preferences.v1",
+    restoreOnLoad: true,
+    dirty: false,
+    restored: false,
+    saveTimer: 0,
+    noticeTimer: 0,
   },
   touch: {
     rotateSensitivity: 0.45,
@@ -509,6 +524,328 @@ function formatTimestamp(ms) {
     return "-";
   }
   return new Date(Number(ms)).toLocaleString();
+}
+
+function showDatasetRestoreNotice(message, tone = "ok", timeoutMs = 5000) {
+  clearTimeout(state.persistence.noticeTimer);
+  state.datasets.restoredMessage = typeof message === "string" ? message : "";
+  state.datasets.restoredTone = tone === "danger" ? "danger" : tone === "warn" ? "warn" : "ok";
+  renderDatasetBrowser();
+  if (!state.datasets.restoredMessage || timeoutMs <= 0) {
+    return;
+  }
+  state.persistence.noticeTimer = window.setTimeout(() => {
+    state.datasets.restoredMessage = "";
+    state.datasets.restoredTone = "ok";
+    renderDatasetBrowser();
+  }, timeoutMs);
+}
+
+function buildPersistencePreferencesSnapshot() {
+  return {
+    version: 1,
+    restoreOnLoad: Boolean(state.persistence.restoreOnLoad),
+  };
+}
+
+function persistPersistencePreferences() {
+  try {
+    window.localStorage.setItem(state.persistence.preferenceKey, JSON.stringify(buildPersistencePreferencesSnapshot()));
+  } catch (error) {
+    console.warn("Failed to persist VisIVO preferences", error);
+  }
+}
+
+function restorePersistencePreferences() {
+  try {
+    const raw = window.localStorage.getItem(state.persistence.preferenceKey);
+    if (!raw) {
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.restoreOnLoad === "boolean") {
+      state.persistence.restoreOnLoad = parsed.restoreOnLoad;
+    }
+  } catch (error) {
+    console.warn("Failed to restore VisIVO preferences", error);
+  }
+}
+
+function buildPersistedStateSnapshot() {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    datasetPath: typeof state.datasets.activeDatasetPath === "string" ? state.datasets.activeDatasetPath : "",
+    renderMode: state.renderMode,
+    renderParams: {
+      scale: state.renderParams.scale,
+      bitrate: state.renderParams.bitrate,
+      targetFps: state.renderParams.targetFps,
+    },
+    visualization: {
+      mode: state.visualization.mode,
+      isoValue: state.visualization.isoValue,
+    },
+    volume: {
+      renderMode: state.volume.renderMode,
+      palette: state.volume.palette,
+      scaleMode: state.volume.scaleMode,
+      opacityScale: state.volume.opacityScale,
+      sampleDistanceScale: state.volume.sampleDistanceScale,
+      sampleDistanceManual: state.volume.sampleDistanceManual,
+      imageSampleDistance: state.volume.imageSampleDistance,
+      imageSampleDistanceManual: state.volume.imageSampleDistanceManual,
+      shade: state.volume.shade,
+      sliceAxis: state.volume.sliceAxis,
+      slicePosition: state.volume.slicePosition,
+      cropping: {
+        enabled: Boolean(state.volume.cropping?.enabled),
+        bounds: Array.isArray(state.volume.cropping?.bounds) ? state.volume.cropping.bounds.slice(0, 6) : [0, 1, 0, 1, 0, 1],
+      },
+    },
+    quality: {
+      interactiveDownsample: state.quality.interactiveDownsample,
+      hqDetailPreset: state.quality.hqDetailPreset,
+    },
+    ui: {
+      activeTab: state.ui.activeTab,
+    },
+  };
+}
+
+function syncPersistencePreferenceUI() {
+  if (elements.restorePreviousSession) {
+    elements.restorePreviousSession.checked = Boolean(state.persistence.restoreOnLoad);
+  }
+  const snapshot = loadSavedSessionSnapshot();
+  const hasSavedSnapshot = Boolean(snapshot);
+  if (elements.savedSessionStatus) {
+    elements.savedSessionStatus.textContent = hasSavedSnapshot
+      ? `Saved session snapshot available${snapshot?.savedAt ? ` (${new Date(snapshot.savedAt).toLocaleString()})` : ""}.`
+      : "No saved session snapshot.";
+    elements.savedSessionStatus.dataset.tone = hasSavedSnapshot ? "ok" : "subtle";
+  }
+  if (elements.restoreSavedSessionButton) {
+    elements.restoreSavedSessionButton.disabled = !hasSavedSnapshot;
+  }
+  if (elements.clearSavedSessionButton) {
+    elements.clearSavedSessionButton.disabled = !hasSavedSnapshot;
+  }
+}
+
+function loadSavedSessionSnapshot() {
+  try {
+    const raw = window.localStorage.getItem(state.persistence.storageKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    console.warn("Failed to read saved VisIVO state", error);
+    return null;
+  }
+}
+
+function persistAppStateNow() {
+  clearTimeout(state.persistence.saveTimer);
+  state.persistence.saveTimer = 0;
+  try {
+    window.localStorage.setItem(state.persistence.storageKey, JSON.stringify(buildPersistedStateSnapshot()));
+    syncPersistencePreferenceUI();
+  } catch (error) {
+    console.warn("Failed to persist VisIVO state", error);
+  }
+}
+
+function scheduleAppStatePersist() {
+  clearTimeout(state.persistence.saveTimer);
+  state.persistence.saveTimer = window.setTimeout(() => {
+    persistAppStateNow();
+  }, 150);
+}
+
+function markMeaningfulSessionDirty({ persist = true } = {}) {
+  state.persistence.dirty = true;
+  if (persist) {
+    scheduleAppStatePersist();
+  }
+}
+
+function applyPersistedStateSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return false;
+  }
+  if (typeof snapshot.datasetPath === "string" && snapshot.datasetPath.trim()) {
+    state.datasets.activeDatasetPath = snapshot.datasetPath.trim();
+    state.datasets.activeDatasetName = basenameFromPath(state.datasets.activeDatasetPath);
+  }
+  if (typeof snapshot.renderMode === "string" && (snapshot.renderMode === "interactive" || snapshot.renderMode === "high-quality")) {
+    state.renderMode = snapshot.renderMode;
+  }
+  if (snapshot.renderParams && typeof snapshot.renderParams === "object") {
+    state.renderParams.scale = clampFloat(Number(snapshot.renderParams.scale), 0.4, 2.0, state.renderParams.scale);
+    state.renderParams.bitrate = clampFloat(Number(snapshot.renderParams.bitrate), 1.0, 100.0, state.renderParams.bitrate);
+    state.renderParams.targetFps = clampFloat(Number(snapshot.renderParams.targetFps), 5.0, 60.0, state.renderParams.targetFps);
+  }
+  if (snapshot.visualization && typeof snapshot.visualization === "object") {
+    if (typeof snapshot.visualization.mode === "string" && ["volume", "isosurface"].includes(snapshot.visualization.mode)) {
+      state.visualization.mode = snapshot.visualization.mode;
+    }
+    if (Number.isFinite(snapshot.visualization.isoValue)) {
+      state.visualization.isoValue = Number(snapshot.visualization.isoValue);
+    }
+  }
+  if (snapshot.volume && typeof snapshot.volume === "object") {
+    if (typeof snapshot.volume.renderMode === "string" && ["composite", "mip", "slice"].includes(snapshot.volume.renderMode)) {
+      state.volume.renderMode = snapshot.volume.renderMode;
+    }
+    if (typeof snapshot.volume.palette === "string" && snapshot.volume.palette.trim()) {
+      state.volume.palette = snapshot.volume.palette.trim();
+    }
+    if (typeof snapshot.volume.scaleMode === "string") {
+      state.volume.scaleMode = snapshot.volume.scaleMode.toLowerCase().startsWith("log") ? "log" : "linear";
+    }
+    if (Number.isFinite(snapshot.volume.opacityScale)) {
+      state.volume.opacityScale = clampFloat(Number(snapshot.volume.opacityScale), 0.1, 4.0, state.volume.opacityScale);
+    }
+    if (typeof snapshot.volume.sampleDistanceManual === "boolean") {
+      state.volume.sampleDistanceManual = snapshot.volume.sampleDistanceManual;
+    }
+    if (state.volume.sampleDistanceManual && Number.isFinite(snapshot.volume.sampleDistanceScale)) {
+      state.volume.sampleDistanceScale = clampFloat(Number(snapshot.volume.sampleDistanceScale), 0.2, 6.0, state.volume.sampleDistanceScale ?? 1.0);
+    }
+    if (typeof snapshot.volume.imageSampleDistanceManual === "boolean") {
+      state.volume.imageSampleDistanceManual = snapshot.volume.imageSampleDistanceManual;
+    }
+    if (state.volume.imageSampleDistanceManual && Number.isFinite(snapshot.volume.imageSampleDistance)) {
+      state.volume.imageSampleDistance = clampFloat(Number(snapshot.volume.imageSampleDistance), 1.0, 4.0, state.volume.imageSampleDistance ?? 1.0);
+    }
+    if (typeof snapshot.volume.shade === "boolean") {
+      state.volume.shade = snapshot.volume.shade;
+    }
+    if (typeof snapshot.volume.sliceAxis === "string" && ["x", "y", "z"].includes(snapshot.volume.sliceAxis)) {
+      state.volume.sliceAxis = snapshot.volume.sliceAxis;
+    }
+    if (Number.isFinite(snapshot.volume.slicePosition)) {
+      state.volume.slicePosition = clampFloat(Number(snapshot.volume.slicePosition), 0.0, 1.0, state.volume.slicePosition);
+    }
+    if (snapshot.volume.cropping && typeof snapshot.volume.cropping === "object") {
+      state.volume.cropping.enabled = Boolean(snapshot.volume.cropping.enabled);
+      if (Array.isArray(snapshot.volume.cropping.bounds) && snapshot.volume.cropping.bounds.length === 6) {
+        state.volume.cropping.bounds = snapshot.volume.cropping.bounds.map((value, index) => {
+          const fallback = state.volume.cropping.bounds[index] ?? 0;
+          return clampFloat(Number(value), 0.0, 1.0, fallback);
+        });
+      }
+    }
+  }
+  if (snapshot.quality && typeof snapshot.quality === "object") {
+    if (Number.isFinite(snapshot.quality.interactiveDownsample)) {
+      state.quality.interactiveDownsample = clampFloat(Number(snapshot.quality.interactiveDownsample), 1.0, 4.0, state.quality.interactiveDownsample);
+    }
+    if (typeof snapshot.quality.hqDetailPreset === "string" && HQ_DETAIL_PRESETS[snapshot.quality.hqDetailPreset]) {
+      state.quality.hqDetailPreset = snapshot.quality.hqDetailPreset;
+    }
+  }
+  if (snapshot.ui && typeof snapshot.ui === "object" && typeof snapshot.ui.activeTab === "string") {
+    state.ui.activeTab = snapshot.ui.activeTab;
+  }
+  return true;
+}
+
+function restorePersistedAppState() {
+  try {
+    const parsed = loadSavedSessionSnapshot();
+    if (!parsed) {
+      return false;
+    }
+    const restored = applyPersistedStateSnapshot(parsed);
+    if (restored) {
+      state.persistence.restored = true;
+      showDatasetRestoreNotice("Previous session settings restored", "ok");
+      logEvent("Previous session settings restored");
+      return true;
+    }
+  } catch (error) {
+    console.warn("Failed to restore VisIVO state", error);
+  }
+  return false;
+}
+
+function restoreSavedSessionNow() {
+  const previousDatasetPath = state.datasets.activeDatasetPath;
+  const restored = restorePersistedAppState();
+  if (!restored) {
+    showDatasetRestoreNotice("No saved session snapshot available", "warn", 5000);
+    logEvent("No saved session snapshot available");
+    syncPersistencePreferenceUI();
+    return false;
+  }
+  syncRuntimeDefaultsToUI();
+  syncVolumeControlsToUI();
+  renderDatasetBrowser();
+  if (typeof setActiveControlTab === "function") {
+    setActiveControlTab(state.ui.activeTab || "session");
+  }
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    if (state.datasets.activeDatasetPath && state.datasets.activeDatasetPath !== previousDatasetPath) {
+      send({ type: "dataset.select", sessionId: state.sessionId, path: state.datasets.activeDatasetPath });
+    }
+    setMode(state.renderMode, true);
+    sendRenderParams();
+  }
+  return true;
+}
+
+function clearSavedSessionSnapshot() {
+  try {
+    window.localStorage.removeItem(state.persistence.storageKey);
+    state.persistence.restored = false;
+    showDatasetRestoreNotice("Saved session snapshot cleared", "ok", 4000);
+    logEvent("Saved session snapshot cleared");
+  } catch (error) {
+    console.warn("Failed to clear saved VisIVO state", error);
+    showDatasetRestoreNotice("Failed to clear saved session snapshot", "danger", 6000);
+    logEvent("Failed to clear saved session snapshot");
+  } finally {
+    syncPersistencePreferenceUI();
+  }
+}
+
+function hasMeaningfulPersistedState() {
+  return Boolean(
+    state.datasets.activeDatasetPath
+    || state.visualization.mode !== "volume"
+    || Math.abs(Number(state.visualization.isoValue) || 0) > 1e-6
+    || state.volume.renderMode !== "composite"
+    || state.volume.palette !== "Inferno"
+    || state.volume.scaleMode !== "linear"
+    || Math.abs((Number(state.volume.opacityScale) || 0) - 1.8) > 1e-6
+    || state.volume.sampleDistanceManual
+    || state.volume.imageSampleDistanceManual
+    || state.volume.shade !== true
+    || state.volume.sliceAxis !== "z"
+    || Math.abs((Number(state.volume.slicePosition) || 0) - 0.5) > 1e-6
+    || Boolean(state.volume.cropping?.enabled)
+    || Math.abs((Number(state.renderParams.scale) || 0) - 1.0) > 1e-6
+    || Math.abs((Number(state.renderParams.bitrate) || 0) - 14.0) > 1e-6
+    || Math.abs((Number(state.renderParams.targetFps) || 0) - 30.0) > 1e-6
+    || Math.abs((Number(state.quality.interactiveDownsample) || 0) - 1.6) > 1e-6
+    || state.quality.hqDetailPreset !== "sharp"
+  );
+}
+
+function shouldWarnOnUnload() {
+  const hasLiveSession = Boolean(
+    (state.ws && state.ws.readyState === WebSocket.OPEN)
+    || (state.pc && state.connectionState !== "disconnected")
+    || state.transport.wsFallbackActive
+  );
+  return Boolean(
+    (hasLiveSession && hasMeaningfulPersistedState())
+    || (state.persistence.dirty && hasMeaningfulPersistedState())
+  );
 }
 
 function resetDatasetDetails() {
@@ -792,10 +1129,14 @@ function renderDatasetBrowser() {
   elements.datasetCurrentPath.textContent = state.datasets.browserEnabled
     ? (state.datasets.activeDatasetPath ? `/${state.datasets.activeDatasetPath}` : "No dataset selected")
     : "Browser unavailable.";
-  elements.datasetBrowserStatus.textContent = !state.datasets.browserEnabled
-    ? "Configure VISIVO_DATASET_ROOT to enable the dataset browser."
-    : (state.datasets.error || "Open the dataset browser to browse and inspect FITS files.");
-  elements.datasetBrowserStatus.dataset.tone = state.datasets.error ? "danger" : "subtle";
+  const summaryStatus = state.datasets.restoredMessage
+    || (!state.datasets.browserEnabled
+      ? "Configure VISIVO_DATASET_ROOT to enable the dataset browser."
+      : (state.datasets.error || "Open the dataset browser to browse and inspect FITS files."));
+  elements.datasetBrowserStatus.textContent = summaryStatus;
+  elements.datasetBrowserStatus.dataset.tone = state.datasets.restoredMessage
+    ? state.datasets.restoredTone
+    : (state.datasets.error ? "danger" : "subtle");
 
   if (!state.datasets.modalOpen) {
     return;
@@ -937,6 +1278,7 @@ function confirmDatasetSelection() {
   }
   state.datasets.activeDatasetPath = relativePath.trim();
   state.datasets.activeDatasetName = basenameFromPath(state.datasets.activeDatasetPath);
+  markMeaningfulSessionDirty();
   closeDatasetBrowserModal();
   openDatasetLoadingModal(state.datasets.activeDatasetPath);
   if (!send({ type: "dataset.select", sessionId: state.sessionId, path: state.datasets.activeDatasetPath })) {
@@ -959,6 +1301,7 @@ function syncRuntimeDefaultsToUI() {
 }
 
 elements.sessionId.textContent = state.sessionId;
+syncPersistencePreferenceUI();
 elements.renderScaleValue.textContent = formatScale(state.renderParams.scale);
 elements.bitrateValue.textContent = formatBitrate(state.renderParams.bitrate);
 elements.targetFpsValue.textContent = formatFps(state.renderParams.targetFps);
@@ -1048,6 +1391,24 @@ elements.datasetHduSelect?.addEventListener("change", () => {
 
 elements.authToken?.addEventListener("change", () => {
   fetchDatasetBrowser(state.datasets.currentPath, { force: true });
+});
+
+elements.restorePreviousSession?.addEventListener("change", () => {
+  state.persistence.restoreOnLoad = Boolean(elements.restorePreviousSession.checked);
+  persistPersistencePreferences();
+  syncPersistencePreferenceUI();
+  logEvent(`Session restore on load ${state.persistence.restoreOnLoad ? "enabled" : "disabled"}`);
+});
+
+elements.restoreSavedSessionButton?.addEventListener("click", () => {
+  const restored = restoreSavedSessionNow();
+  if (restored) {
+    logEvent("Saved session snapshot restored manually");
+  }
+});
+
+elements.clearSavedSessionButton?.addEventListener("click", () => {
+  clearSavedSessionSnapshot();
 });
 
 elements.datasetRefreshButton?.addEventListener("click", () => {
@@ -1296,6 +1657,14 @@ window.addEventListener("online", () => {
     openSocket();
   }
 });
+window.addEventListener("beforeunload", (event) => {
+  persistAppStateNow();
+  if (!shouldWarnOnUnload()) {
+    return;
+  }
+  event.preventDefault();
+  event.returnValue = "Refreshing now may discard the current VisIVO session state.";
+});
 
 const resizeObserver = new ResizeObserver(() => reportResize());
 resizeObserver.observe(elements.stageFrame);
@@ -1430,6 +1799,10 @@ function disconnect(manual = true) {
 
   state.ws = null;
   cleanupPeerConnection();
+  if (manual) {
+    state.persistence.dirty = false;
+    persistAppStateNow();
+  }
   elements.disconnectButton.disabled = true;
   elements.connectButton.disabled = false;
   setConnectionState(manual ? "idle" : "reconnecting", manual ? "subtle" : "warn");
@@ -1560,6 +1933,15 @@ function handleSocketMessage(raw) {
       setConnectionState("error", "danger", message.message || "Server error");
       if (message.phase === "dataset-switch") {
         closeDatasetLoadingModal();
+      }
+      if (
+        state.persistence.restored
+        && message.phase
+        && ["dataset-switch", "hello", "session-init"].includes(message.phase)
+        && typeof message.code === "string"
+        && message.code.startsWith("dataset-")
+      ) {
+        showDatasetRestoreNotice("Saved dataset settings could not be reopened automatically", "danger", 7000);
       }
       logEvent(
         `Server error${message.code ? ` [${message.code}]` : ""}${message.phase ? ` phase=${message.phase}` : ""}${message.retryable ? " retryable" : ""}`
@@ -2006,6 +2388,7 @@ function send(payload) {
 function sendRenderParams() {
   const effectiveScale = effectiveRenderScaleForMode(state.renderMode);
   const effectiveBitrate = effectiveBitrateForMode(state.renderMode);
+  markMeaningfulSessionDirty();
   send({
     type: "render.params",
     sessionId: state.sessionId,
@@ -2032,6 +2415,7 @@ function setMode(mode, notify = true) {
   elements.renderState.textContent = mode;
   elements.qualityBadge.textContent = mode;
   if (notify) {
+    markMeaningfulSessionDirty();
     send({
       type: "render.mode",
       sessionId: state.sessionId,
@@ -2376,6 +2760,7 @@ function startInteraction(source) {
     return;
   }
   state.interactionActive = true;
+  state.persistence.dirty = true;
   clearTimeout(state.pendingInteractionEnd);
   send({
     type: "interaction.start",
@@ -3171,29 +3556,31 @@ function createSessionId() {
   return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function setActiveControlTab(tabKey) {
+  closePaletteMenu();
+  state.ui.activeTab = tabKey;
+  scheduleAppStatePersist();
+  controlTabButtons.forEach((button) => {
+    const active = button.dataset.tabTarget === tabKey;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  controlTabPanels.forEach((panel) => {
+    const active = panel.dataset.tabPanel === tabKey;
+    panel.classList.toggle("active", active);
+  });
+  if (tabKey === "metrics") {
+    fetchMetricsNow(true);
+  }
+}
+
 function installControlPanelUI() {
-  const setActiveTab = (tabKey) => {
-    closePaletteMenu();
-    state.ui.activeTab = tabKey;
-    controlTabButtons.forEach((button) => {
-      const active = button.dataset.tabTarget === tabKey;
-      button.classList.toggle("active", active);
-      button.setAttribute("aria-selected", active ? "true" : "false");
-    });
-    controlTabPanels.forEach((panel) => {
-      const active = panel.dataset.tabPanel === tabKey;
-      panel.classList.toggle("active", active);
-    });
-    if (tabKey === "metrics") {
-      fetchMetricsNow(true);
-    }
-  };
 
   controlTabButtons.forEach((button) => {
     button.addEventListener("click", () => {
       const tabKey = button.dataset.tabTarget;
       if (tabKey) {
-        setActiveTab(tabKey);
+        setActiveControlTab(tabKey);
       }
     });
   });
@@ -3214,6 +3601,8 @@ function installControlPanelUI() {
       closeDrawer();
     }
   });
+
+  setActiveControlTab(state.ui.activeTab || "session");
 }
 
 function startMetricsPolling() {
@@ -3553,7 +3942,12 @@ function appendLog(message) {
 }
 
 async function bootstrapApp() {
+  restorePersistencePreferences();
   await loadRuntimeConfig();
+  syncPersistencePreferenceUI();
+  if (state.persistence.restoreOnLoad) {
+    restorePersistedAppState();
+  }
   syncRuntimeDefaultsToUI();
   syncVolumeControlsToUI();
   renderDatasetBrowser();

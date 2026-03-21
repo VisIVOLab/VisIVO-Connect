@@ -92,6 +92,21 @@
                     <input id="authToken" type="password" spellcheck="false" placeholder="VISIVO_AUTH_TOKEN" />
                   </label>
 
+                  <label class="field compact-field">
+                    <span>Session restore</span>
+                    <div class="toggle-row">
+                      <label class="checkbox-row">
+                        <input id="restorePreviousSession" type="checkbox" checked />
+                        <span>Restore previous session on load</span>
+                      </label>
+                    </div>
+                    <div class="dataset-browser-status" id="savedSessionStatus">No saved session snapshot.</div>
+                    <div class="button-row">
+                      <button class="ghost-button compact-button" id="restoreSavedSessionButton" type="button" disabled>Restore saved session now</button>
+                      <button class="ghost-button compact-button" id="clearSavedSessionButton" type="button" disabled>Clear saved session</button>
+                    </div>
+                  </label>
+
                   <div class="button-row">
                     <button class="primary-button" id="connectButton" type="button">Connect</button>
                     <button class="ghost-button" id="disconnectButton" type="button" disabled>Disconnect</button>
