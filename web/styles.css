@@ -238,6 +238,134 @@ input {
   opacity: 0;
 }
 
+.scientific-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.scientific-axis {
+  position: absolute;
+  color: rgba(237, 245, 255, 0.9);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.72);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.scientific-axis-bottom {
+  left: 56px;
+  right: 18px;
+  bottom: 12px;
+  height: 44px;
+  border-top: 1px solid rgba(167, 255, 207, 0.36);
+}
+
+.scientific-axis-left {
+  left: 12px;
+  top: 16px;
+  bottom: 56px;
+  width: 44px;
+  border-right: 1px solid rgba(167, 255, 207, 0.36);
+}
+
+.scientific-axis-title {
+  position: absolute;
+  color: var(--accent-strong);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+}
+
+.scientific-axis-bottom .scientific-axis-title {
+  left: 0;
+  top: -18px;
+}
+
+.scientific-axis-left .scientific-axis-title {
+  left: -4px;
+  top: 0;
+  transform: rotate(-90deg) translateX(-100%);
+  transform-origin: top left;
+}
+
+.scientific-tick {
+  position: absolute;
+}
+
+.scientific-axis-bottom .scientific-tick {
+  top: -1px;
+  transform: translateX(-50%);
+}
+
+.scientific-axis-left .scientific-tick {
+  right: -1px;
+  transform: translateY(50%);
+}
+
+.scientific-tick-mark {
+  position: absolute;
+  background: rgba(167, 255, 207, 0.44);
+}
+
+.scientific-axis-bottom .scientific-tick-mark {
+  width: 1px;
+  height: 8px;
+  top: 0;
+  left: 0;
+}
+
+.scientific-axis-left .scientific-tick-mark {
+  width: 8px;
+  height: 1px;
+  top: 0;
+  right: 0;
+}
+
+.scientific-tick-label {
+  position: absolute;
+  white-space: nowrap;
+  color: rgba(237, 245, 255, 0.88);
+}
+
+.scientific-axis-bottom .scientific-tick-label {
+  top: 10px;
+  left: 0;
+  transform: translateX(-50%);
+}
+
+.scientific-axis-left .scientific-tick-label {
+  right: 10px;
+  top: 0;
+  transform: translateY(50%);
+}
+
+.scientific-readout {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  max-width: min(44%, 420px);
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(140, 173, 211, 0.18);
+  background: rgba(8, 15, 26, 0.7);
+  backdrop-filter: blur(10px);
+  color: var(--text);
+}
+
+.scientific-readout-primary {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.scientific-readout-secondary {
+  margin-top: 6px;
+  font-size: 0.76rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .overlay-card {
   width: min(540px, 100%);
   padding: 24px;

@@ -75,6 +75,18 @@ class SessionFakeRenderer:
         self.visualization_mode = "volume"
         self.iso_value = 0.5
         self.volume_params: dict[str, Any] = {}
+        self.selected_wcs_system = "galactic"
+        self.slice_reference = {
+            "wcsAvailable": False,
+            "selectedWcsSystem": "galactic",
+            "wcsAxesVisible": False,
+            "selectedSliceAxis": "z",
+            "selectedSliceIndex": 0,
+            "selectedAxisSize": 2,
+            "sliceAxisSizes": {"x": 2, "y": 2, "z": 2},
+            "wcsUnavailableReason": "missing-celestial-wcs",
+        }
+        self.last_pointer_readout: dict[str, Any] | None = None
         self.render_count = 0
         self.added_actors: list[Any] = []
         self._render_latency_s = 0.0
@@ -139,7 +151,11 @@ class SessionFakeRenderer:
             "sliceAxis": "z",
             "sliceIndex": 0,
             "sliceMaxIndex": 1,
+            "selectedAxisSize": 2,
+            "sliceAxisSizes": {"x": 2, "y": 2, "z": 2},
             "slicePosition": 0.5,
+            "wcsSystem": self.selected_wcs_system,
+            "sliceReference": dict(self.slice_reference),
             "cropping": {"enabled": False, "bounds": [0, 1, 0, 1, 0, 1]},
         }
 
@@ -207,6 +223,16 @@ class SessionFakeRenderer:
                 "visualizationMode": self.visualization_mode,
                 "volumeRenderMode": "composite",
                 "stabilityMode": self.stability_mode,
+                "wcsAvailable": False,
+                "selectedWcsSystem": self.selected_wcs_system,
+                "wcsAxesVisible": False,
+                "axesActorVisible": True,
+                "selectedSliceAxis": "z",
+                "selectedSliceIndex": 0,
+                "selectedAxisSize": 2,
+                "lastPointerImageCoord": None,
+                "lastPointerWcsCoord": None,
+                "sliceReference": dict(self.slice_reference),
             }
         )
         return diagnostics
@@ -216,6 +242,9 @@ class SessionFakeRenderer:
         sample = self.volume_params.get("sampleDistanceScale")
         if isinstance(sample, (int, float)):
             self.volume_mapper.SetSampleDistance(float(sample))
+        if isinstance(params.get("wcsSystem"), str):
+            self.selected_wcs_system = params["wcsSystem"]
+            self.slice_reference["selectedWcsSystem"] = self.selected_wcs_system
 
     def resize(self, width: int, height: int, dpr: float = 1.0) -> None:
         self.window_width = max(64, int(width))
@@ -232,6 +261,24 @@ class SessionFakeRenderer:
 
     def apply_zoom(self, zoom_factor: float) -> None:
         return
+
+    def get_slice_reference(self) -> dict[str, Any]:
+        return dict(self.slice_reference)
+
+    def get_last_pointer_readout(self) -> dict[str, Any] | None:
+        return dict(self.last_pointer_readout) if isinstance(self.last_pointer_readout, dict) else None
+
+    def update_pointer_readout(self, x_norm: float, y_norm: float) -> dict[str, Any]:
+        self.last_pointer_readout = {
+            "available": True,
+            "selectedWcsSystem": self.selected_wcs_system,
+            "imageCoord": {"i": int(round(max(0.0, min(1.0, x_norm)))), "j": int(round(max(0.0, min(1.0, y_norm))))},
+            "voxelIndex": {"x": 0, "y": 0, "z": 0},
+            "wcsCoord": None,
+            "otherSystems": {},
+            "reason": "missing-celestial-wcs",
+        }
+        return dict(self.last_pointer_readout)
 
     def render_rgb_frame(self) -> tuple[np.ndarray, int, int, dict[str, Any]]:
         started_ns = time.time_ns()

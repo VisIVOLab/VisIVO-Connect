@@ -418,6 +418,18 @@ class RemoteRenderSession:
         self._last_input_ns = time.time_ns()
         self.request_render()
 
+    def update_slice_pointer(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        x_norm = payload.get("xNorm", payload.get("x"))
+        y_norm = payload.get("yNorm", payload.get("y"))
+        if not isinstance(x_norm, (int, float)) or not isinstance(y_norm, (int, float)):
+            return None
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                return slot.renderer.update_pointer_readout(float(x_norm), float(y_norm))
+        finally:
+            self._release_renderer_slot(slot)
+
     def set_render_params(self, payload: dict[str, Any]) -> None:
         params = payload.get("params", {})
         if not isinstance(params, dict):
@@ -502,6 +514,8 @@ class RemoteRenderSession:
                 volume_params = slot.renderer.get_volume_params()
                 renderer_diagnostics = slot.renderer.get_renderer_diagnostics()
                 scalar_lo, scalar_hi = slot.renderer.get_scalar_range()
+                slice_reference = slot.renderer.get_slice_reference()
+                pointer_readout = slot.renderer.get_last_pointer_readout()
         finally:
             self._release_renderer_slot(slot)
         payload: dict[str, Any] = {
@@ -535,6 +549,8 @@ class RemoteRenderSession:
                 "eglContextErrorDetected": bool(self.loading_state.get("eglContextErrorDetected")),
             },
             "datasetLoading": dict(self.loading_state),
+            "sliceReference": slice_reference,
+            "slicePointerReadout": pointer_readout,
         }
         payload["isoRangeMin"] = scalar_lo
         payload["isoRangeMax"] = scalar_hi

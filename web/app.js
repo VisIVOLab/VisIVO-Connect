@@ -5,6 +5,11 @@ const elements = {
   remoteVideo: document.getElementById("remoteVideo"),
   fallbackImage: document.getElementById("fallbackImage"),
   gestureLayer: document.getElementById("gestureLayer"),
+  scientificOverlay: document.getElementById("scientificOverlay"),
+  scientificAxisLeft: document.getElementById("scientificAxisLeft"),
+  scientificAxisBottom: document.getElementById("scientificAxisBottom"),
+  scientificReadoutPrimary: document.getElementById("scientificReadoutPrimary"),
+  scientificReadoutSecondary: document.getElementById("scientificReadoutSecondary"),
   connectionState: document.getElementById("connectionState"),
   renderState: document.getElementById("renderState"),
   qualityBadge: document.getElementById("qualityBadge"),
@@ -89,6 +94,8 @@ const elements = {
   sliceAxis: document.getElementById("sliceAxis"),
   slicePosition: document.getElementById("slicePosition"),
   slicePositionValue: document.getElementById("slicePositionValue"),
+  sliceWcsSystem: document.getElementById("sliceWcsSystem"),
+  sliceWcsStatus: document.getElementById("sliceWcsStatus"),
   cropControls: document.getElementById("cropControls"),
   cropEnabled: document.getElementById("cropEnabled"),
   cropXMin: document.getElementById("cropXMin"),
@@ -281,7 +288,13 @@ const state = {
     imageSampleDistanceManual: false,
     shade: true,
     sliceAxis: "z",
-    slicePosition: 0.5,
+    sliceIndex: 0,
+    sliceAxisSize: 1,
+    sliceAxisSizes: { x: 1, y: 1, z: 1 },
+    slicePosition: 0.0,
+    wcsSystem: "galactic",
+    sliceReference: null,
+    slicePointerReadout: null,
     cropping: {
       enabled: false,
       bounds: [0, 1, 0, 1, 0, 1],
@@ -302,6 +315,9 @@ const state = {
   service: {
     backendVersion: "",
     frontendBuild: "",
+  },
+  scientific: {
+    lastSliceReadoutSentAt: 0,
   },
   datasets: {
     browserEnabled: false,
@@ -628,7 +644,9 @@ function buildPersistedStateSnapshot() {
       imageSampleDistanceManual: state.volume.imageSampleDistanceManual,
       shade: state.volume.shade,
       sliceAxis: state.volume.sliceAxis,
+      sliceIndex: state.volume.sliceIndex,
       slicePosition: state.volume.slicePosition,
+      wcsSystem: state.volume.wcsSystem,
       cropping: {
         enabled: Boolean(state.volume.cropping?.enabled),
         bounds: Array.isArray(state.volume.cropping?.bounds) ? state.volume.cropping.bounds.slice(0, 6) : [0, 1, 0, 1, 0, 1],
@@ -761,8 +779,17 @@ function applyPersistedStateSnapshot(snapshot) {
     if (typeof snapshot.volume.sliceAxis === "string" && ["x", "y", "z"].includes(snapshot.volume.sliceAxis)) {
       state.volume.sliceAxis = snapshot.volume.sliceAxis;
     }
+    if (Number.isFinite(snapshot.volume.sliceIndex)) {
+      state.volume.sliceIndex = Math.max(0, Math.round(Number(snapshot.volume.sliceIndex)));
+    }
     if (Number.isFinite(snapshot.volume.slicePosition)) {
       state.volume.slicePosition = clampFloat(Number(snapshot.volume.slicePosition), 0.0, 1.0, state.volume.slicePosition);
+    }
+    if (typeof snapshot.volume.wcsSystem === "string") {
+      const normalizedWcs = snapshot.volume.wcsSystem.toLowerCase();
+      if (["galactic", "fk5", "ecliptic"].includes(normalizedWcs)) {
+        state.volume.wcsSystem = normalizedWcs;
+      }
     }
     if (snapshot.volume.cropping && typeof snapshot.volume.cropping === "object") {
       state.volume.cropping.enabled = Boolean(snapshot.volume.cropping.enabled);
@@ -860,7 +887,8 @@ function hasMeaningfulPersistedState() {
     || state.volume.imageSampleDistanceManual
     || state.volume.shade !== true
     || state.volume.sliceAxis !== "z"
-    || Math.abs((Number(state.volume.slicePosition) || 0) - 0.5) > 1e-6
+    || Math.abs((Number(state.volume.sliceIndex) || 0) - 0) > 1e-6
+    || state.volume.wcsSystem !== "galactic"
     || Boolean(state.volume.cropping?.enabled)
     || Math.abs((Number(state.renderParams.scale) || 0) - 1.0) > 1e-6
     || Math.abs((Number(state.renderParams.bitrate) || 0) - 14.0) > 1e-6
@@ -1717,12 +1745,22 @@ elements.volumeShade.addEventListener("change", () => {
 
 elements.sliceAxis.addEventListener("change", () => {
   state.volume.sliceAxis = elements.sliceAxis.value;
+  state.volume.sliceAxisSize = Number(state.volume.sliceAxisSizes?.[state.volume.sliceAxis] || 1);
+  state.volume.sliceIndex = Math.max(0, Math.min(Math.max(0, state.volume.sliceAxisSize - 1), Math.round(Number(state.volume.sliceIndex) || 0)));
+  syncVolumeControlsToUI();
   sendRenderParams();
 });
 
 elements.slicePosition.addEventListener("input", () => {
-  state.volume.slicePosition = Number(elements.slicePosition.value);
-  elements.slicePositionValue.textContent = formatFloat(state.volume.slicePosition);
+  state.volume.sliceIndex = Math.max(0, Math.round(Number(elements.slicePosition.value) || 0));
+  state.volume.slicePosition = clamp01(state.volume.sliceIndex / Math.max(1, state.volume.sliceAxisSize - 1));
+  elements.slicePositionValue.textContent = `${state.volume.sliceIndex} / ${Math.max(0, state.volume.sliceAxisSize - 1)}`;
+  sendRenderParams();
+});
+
+elements.sliceWcsSystem?.addEventListener("change", () => {
+  state.volume.wcsSystem = elements.sliceWcsSystem.value;
+  renderScientificOverlay();
   sendRenderParams();
 });
 
@@ -2020,6 +2058,12 @@ function handleSocketMessage(raw) {
         if (message.rendererDiagnostics && typeof message.rendererDiagnostics === "object") {
           mergePaletteCatalog(message.rendererDiagnostics.paletteCatalog);
         }
+        if (message.sliceReference && typeof message.sliceReference === "object") {
+          state.volume.sliceReference = message.sliceReference;
+        }
+        if (message.slicePointerReadout && typeof message.slicePointerReadout === "object") {
+          state.volume.slicePointerReadout = message.slicePointerReadout;
+        }
         syncVolumeControlsToUI();
       }
       if (message.text) {
@@ -2083,6 +2127,12 @@ function handleSocketMessage(raw) {
           }
           fetchDatasetBrowser(state.datasets.currentPath, { force: true });
         }, 250);
+      }
+      break;
+    case "slice.readout":
+      if (message.slicePointerReadout && typeof message.slicePointerReadout === "object") {
+        state.volume.slicePointerReadout = message.slicePointerReadout;
+        renderScientificOverlay();
       }
       break;
     case "ws-stream.started":
@@ -2644,8 +2694,36 @@ function updateViewportValue() {
   elements.viewportValue.textContent = `${viewport.width} x ${viewport.height} @ ${viewport.dpr.toFixed(2)}x`;
 }
 
+function shouldSendSliceReadout() {
+  return Boolean(
+    state.ws
+    && state.ws.readyState === WebSocket.OPEN
+    && state.visualization.mode === "volume"
+    && state.volume.renderMode === "slice"
+  );
+}
+
+function sendSlicePointerReadout(point) {
+  if (!shouldSendSliceReadout()) {
+    return;
+  }
+  const now = performance.now();
+  if (now - state.scientific.lastSliceReadoutSentAt < 80) {
+    return;
+  }
+  state.scientific.lastSliceReadoutSentAt = now;
+  send({
+    type: "slice.pointer",
+    sessionId: state.sessionId,
+    xNorm: clamp01(Number(point.x)),
+    yNorm: clamp01(Number(point.y)),
+  });
+}
+
 function installGestureHandlers(target) {
   const pointerMove = (event) => {
+    const previewPoint = normalizePoint(event);
+    sendSlicePointerReadout(previewPoint);
     const pointer = state.activePointers.get(event.pointerId);
     if (!pointer) {
       return;
@@ -2858,6 +2936,11 @@ function installGestureHandlers(target) {
 
   target.addEventListener("pointerup", finishPointer);
   target.addEventListener("pointercancel", finishPointer);
+  target.addEventListener("pointerleave", () => {
+    if (elements.scientificReadoutPrimary && state.volume.renderMode === "slice") {
+      renderScientificOverlay();
+    }
+  });
 
   target.addEventListener("wheel", (event) => {
     event.preventDefault();
@@ -3152,6 +3235,92 @@ function formatFloat(value) {
   return Number(value).toFixed(2);
 }
 
+function formatScientificDegrees(value) {
+  return Number.isFinite(value) ? `${Number(value).toFixed(3)}°` : "-";
+}
+
+function formatWcsSystemName(value) {
+  if (value === "fk5") {
+    return "FK5 / J2000";
+  }
+  if (value === "ecliptic") {
+    return "Ecliptic";
+  }
+  return "Galactic";
+}
+
+function renderScientificAxis(container, axis, orientation) {
+  if (!container) {
+    return;
+  }
+  container.replaceChildren();
+  if (!axis || !Array.isArray(axis.ticks) || axis.ticks.length === 0) {
+    return;
+  }
+  const title = document.createElement("div");
+  title.className = "scientific-axis-title";
+  title.textContent = axis.title || "";
+  container.appendChild(title);
+  axis.ticks.forEach((tick) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "scientific-tick";
+    if (orientation === "bottom") {
+      wrapper.style.left = `${Math.max(0, Math.min(1, Number(tick.position) || 0)) * 100}%`;
+    } else {
+      wrapper.style.bottom = `${Math.max(0, Math.min(1, Number(tick.position) || 0)) * 100}%`;
+    }
+    const mark = document.createElement("div");
+    mark.className = "scientific-tick-mark";
+    const label = document.createElement("div");
+    label.className = "scientific-tick-label";
+    label.textContent = tick.label || "-";
+    wrapper.appendChild(mark);
+    wrapper.appendChild(label);
+    container.appendChild(wrapper);
+  });
+}
+
+function renderScientificOverlay() {
+  const isSlice = state.visualization.mode === "volume" && state.volume.renderMode === "slice";
+  const reference = state.volume.sliceReference;
+  const showOverlay = Boolean(isSlice && reference?.wcsAxesVisible);
+  elements.scientificOverlay?.classList.toggle("hidden", !showOverlay);
+  elements.scientificOverlay?.setAttribute("aria-hidden", showOverlay ? "false" : "true");
+  renderScientificAxis(elements.scientificAxisBottom, reference?.bottomAxis, "bottom");
+  renderScientificAxis(elements.scientificAxisLeft, reference?.leftAxis, "left");
+  if (elements.scientificReadoutPrimary) {
+    const readout = state.volume.slicePointerReadout;
+    if (!isSlice) {
+      elements.scientificReadoutPrimary.textContent = "Slice readout unavailable";
+      elements.scientificReadoutSecondary.textContent = "";
+    } else if (readout?.imageCoord) {
+      const wcs = readout.wcsCoord;
+      const image = readout.imageCoord;
+      const prefix = `px (${image.i}, ${image.j})`;
+      elements.scientificReadoutPrimary.textContent = wcs
+        ? `${prefix} · ${formatWcsSystemName(readout.selectedWcsSystem)} ${wcs.lonLabel}, ${wcs.latLabel}`
+        : `${prefix} · WCS unavailable`;
+      const secondary = [];
+      const voxel = readout.voxelIndex;
+      if (voxel) {
+        secondary.push(`voxel x=${voxel.x}, y=${voxel.y}, z=${voxel.z}`);
+      }
+      const extras = readout.otherSystems || {};
+      Object.keys(extras).forEach((key) => {
+        const item = extras[key];
+        secondary.push(`${formatWcsSystemName(key)} ${item.lonLabel}, ${item.latLabel}`);
+      });
+      elements.scientificReadoutSecondary.textContent = secondary.join(" · ");
+    } else if (reference?.wcsAvailable) {
+      elements.scientificReadoutPrimary.textContent = `${formatWcsSystemName(state.volume.wcsSystem)} overlay active`;
+      elements.scientificReadoutSecondary.textContent = "Move the pointer over the slice to inspect pixel and WCS coordinates.";
+    } else {
+      elements.scientificReadoutPrimary.textContent = "Slice readout unavailable";
+      elements.scientificReadoutSecondary.textContent = reference?.wcsUnavailableReason || "";
+    }
+  }
+}
+
 function clampFloat(value, min, max, fallback) {
   if (!Number.isFinite(value)) {
     return fallback;
@@ -3241,6 +3410,7 @@ function toggleVisualizationControls() {
   elements.volumeControls.classList.toggle("hidden", !isVolume);
   elements.sliceControls.classList.toggle("hidden", !isSlice);
   elements.cropControls.classList.toggle("hidden", !isVolume);
+  renderScientificOverlay();
 }
 
 function applyIsoRange(min, max) {
@@ -3479,13 +3649,31 @@ function syncVolumeControlsToUI() {
     : "profile";
   elements.volumeShade.checked = Boolean(state.volume.shade);
   elements.sliceAxis.value = state.volume.sliceAxis;
-  elements.slicePosition.value = String(state.volume.slicePosition);
-  elements.slicePositionValue.textContent = formatFloat(state.volume.slicePosition);
+  const activeAxisSize = Math.max(1, Number(state.volume.sliceAxisSize) || 1);
+  const maxIndex = Math.max(0, activeAxisSize - 1);
+  elements.slicePosition.min = "0";
+  elements.slicePosition.max = String(maxIndex);
+  elements.slicePosition.step = "1";
+  elements.slicePosition.value = String(Math.max(0, Math.min(maxIndex, Math.round(Number(state.volume.sliceIndex) || 0))));
+  elements.slicePositionValue.textContent = `${Math.max(0, Math.min(maxIndex, Math.round(Number(state.volume.sliceIndex) || 0)))} / ${maxIndex}`;
+  if (elements.sliceWcsSystem) {
+    elements.sliceWcsSystem.value = state.volume.wcsSystem;
+  }
+  if (elements.sliceWcsStatus) {
+    if (state.volume.sliceReference?.wcsAvailable) {
+      elements.sliceWcsStatus.textContent = `${state.volume.wcsSystem.toUpperCase()} overlay active`;
+    } else {
+      elements.sliceWcsStatus.textContent = state.volume.sliceReference?.wcsUnavailableReason
+        ? `WCS unavailable (${state.volume.sliceReference.wcsUnavailableReason})`
+        : "WCS unavailable";
+    }
+  }
   elements.cropEnabled.checked = Boolean(state.volume.cropping.enabled);
   syncCropBoundsFromUI();
   syncPalettePreview();
   renderPaletteMenu();
   toggleVisualizationControls();
+  renderScientificOverlay();
 }
 
 function mergeVolumeParams(incoming) {
@@ -3530,11 +3718,46 @@ function mergeVolumeParams(incoming) {
   if (typeof incoming.sliceAxis === "string") {
     state.volume.sliceAxis = incoming.sliceAxis;
   }
+  if (Number.isFinite(incoming.selectedAxisSize)) {
+    state.volume.sliceAxisSize = Math.max(1, Math.round(Number(incoming.selectedAxisSize)));
+  }
+  if (incoming.sliceAxisSizes && typeof incoming.sliceAxisSizes === "object") {
+    state.volume.sliceAxisSizes = {
+      x: Math.max(1, Math.round(Number(incoming.sliceAxisSizes.x || state.volume.sliceAxisSizes.x || 1))),
+      y: Math.max(1, Math.round(Number(incoming.sliceAxisSizes.y || state.volume.sliceAxisSizes.y || 1))),
+      z: Math.max(1, Math.round(Number(incoming.sliceAxisSizes.z || state.volume.sliceAxisSizes.z || 1))),
+    };
+  }
+  if (typeof incoming.wcsSystem === "string") {
+    const normalizedWcs = incoming.wcsSystem.toLowerCase();
+    if (["galactic", "fk5", "ecliptic"].includes(normalizedWcs)) {
+      state.volume.wcsSystem = normalizedWcs;
+    }
+  }
+  if (incoming.sliceReference && typeof incoming.sliceReference === "object") {
+    state.volume.sliceReference = incoming.sliceReference;
+    if (Number.isFinite(incoming.sliceReference.selectedAxisSize)) {
+      state.volume.sliceAxisSize = Math.max(1, Math.round(Number(incoming.sliceReference.selectedAxisSize)));
+    }
+    if (incoming.sliceReference.sliceAxisSizes && typeof incoming.sliceReference.sliceAxisSizes === "object") {
+      state.volume.sliceAxisSizes = {
+        x: Math.max(1, Math.round(Number(incoming.sliceReference.sliceAxisSizes.x || state.volume.sliceAxisSizes.x || 1))),
+        y: Math.max(1, Math.round(Number(incoming.sliceReference.sliceAxisSizes.y || state.volume.sliceAxisSizes.y || 1))),
+        z: Math.max(1, Math.round(Number(incoming.sliceReference.sliceAxisSizes.z || state.volume.sliceAxisSizes.z || 1))),
+      };
+    }
+  }
+  state.volume.sliceAxisSize = Math.max(
+    1,
+    Number(state.volume.sliceAxisSizes?.[state.volume.sliceAxis] || incoming.selectedAxisSize || state.volume.sliceAxisSize || 1)
+  );
   if (Number.isFinite(incoming.slicePosition)) {
     state.volume.slicePosition = clamp01(Number(incoming.slicePosition));
   }
-  if (Number.isFinite(incoming.sliceIndex) && Number.isFinite(incoming.sliceMaxIndex) && incoming.sliceMaxIndex > 0) {
-    state.volume.slicePosition = clamp01(Number(incoming.sliceIndex) / Number(incoming.sliceMaxIndex));
+  if (Number.isFinite(incoming.sliceIndex)) {
+    state.volume.sliceIndex = Math.max(0, Math.round(Number(incoming.sliceIndex)));
+    const denominator = Math.max(1, (Number.isFinite(incoming.sliceMaxIndex) ? Number(incoming.sliceMaxIndex) : (state.volume.sliceAxisSize - 1)));
+    state.volume.slicePosition = clamp01(Number(state.volume.sliceIndex) / denominator);
   }
   const cropping = incoming.cropping;
   if (cropping && typeof cropping === "object") {
@@ -3556,7 +3779,8 @@ function buildVolumeParamsPayload() {
     opacityScale: state.volume.opacityScale,
     shade: state.volume.shade,
     sliceAxis: state.volume.sliceAxis,
-    slicePosition: state.volume.slicePosition,
+    sliceIndex: state.volume.sliceIndex,
+    wcsSystem: state.volume.wcsSystem,
     cropping: {
       enabled: state.volume.cropping.enabled,
       bounds: state.volume.cropping.bounds,

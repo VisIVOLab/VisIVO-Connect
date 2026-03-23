@@ -17,6 +17,12 @@ from backend.core.models import HIGH_QUALITY_PROFILE, INTERACTIVE_PROFILE, Quali
 from backend.core.config import load_config
 from backend.core.observability import peek_last_fits_import_details
 from backend.data import load_image_data
+from backend.data.fits_wcs import (
+    clamp_slice_index,
+    compute_pointer_readout,
+    get_slice_reference,
+    normalize_wcs_system,
+)
 from backend.rendering.isosurface_pipeline import build_isosurface_pipeline
 from backend.rendering.vlva_colormaps import (
     DEFAULT_COLOR_MAP,
@@ -152,8 +158,14 @@ class VTKDatacubeRenderer:
         }
         self.slice_axis = "z"
         self.slice_index: int | None = None
+        self.selected_wcs_system = "galactic"
+        self._slice_reference: dict[str, Any] = {}
+        self._last_pointer_readout: dict[str, Any] | None = None
         self.cropping_enabled = False
         self.cropping_bounds_norm = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+        self.axes_actor_visible = True
+        self.axes_actor = vtk.vtkAxesActor()
+        self._axes_actor_added = False
 
         self._volume_scalar_range = (0.0, 1.0)
         self._slice_palette_application: dict[str, Any] = {
@@ -254,6 +266,7 @@ class VTKDatacubeRenderer:
         self.image_data = self._load_image_data()
         self._dataset_import_details = peek_last_fits_import_details() or {}
         self._warmup_metrics["datasetLoadMs"] = (time.time_ns() - dataset_started_ns) / 1e6
+        self._sync_slice_reference()
         scalar_summary_started_ns = time.time_ns()
         self._log_scalar_summary(self.image_data)
         self._warmup_metrics["scalarSummaryMs"] = (time.time_ns() - scalar_summary_started_ns) / 1e6
@@ -263,9 +276,13 @@ class VTKDatacubeRenderer:
         outline_started_ns = time.time_ns()
         self._configure_outline(self.image_data)
         self._warmup_metrics["outlinePipelineInitMs"] = (time.time_ns() - outline_started_ns) / 1e6
+        self._configure_orientation_actor(self.image_data)
         attach_started_ns = time.time_ns()
         self.renderer.AddVolume(self.volume)
         self.renderer.AddActor(self.outline_actor)
+        if self.axes_actor_visible and not self._axes_actor_added:
+            self.renderer.AddActor(self.axes_actor)
+            self._axes_actor_added = True
         self.renderer.SetBackground(0.03, 0.04, 0.06)
         self._warmup_metrics["scenePropAttachMs"] = (time.time_ns() - attach_started_ns) / 1e6
         camera_started_ns = time.time_ns()
@@ -860,6 +877,19 @@ class VTKDatacubeRenderer:
         self.outline_actor.GetProperty().SetColor(0.9, 0.9, 0.9)
         self.outline_actor.GetProperty().SetLineWidth(1.5)
 
+    def _configure_orientation_actor(self, image_data: vtk.vtkImageData) -> None:
+        dims = image_data.GetDimensions()
+        max_length = max(float(max(dims)), 1.0)
+        length = max(1.0, max_length * 0.14)
+        self.axes_actor.SetTotalLength(length, length, length)
+        self.axes_actor.SetShaftTypeToLine()
+        self.axes_actor.SetCylinderRadius(0.02)
+        self.axes_actor.SetConeRadius(0.18)
+        self.axes_actor.AxisLabelsOn()
+        self.axes_actor.SetPosition(0.0, 0.0, 0.0)
+        self.axes_actor.SetVisibility(1 if self.axes_actor_visible else 0)
+        self.axes_actor.PickableOff()
+
     def _configure_isosurface_pipeline(self, image_data: vtk.vtkImageData) -> None:
         scalar_range = image_data.GetScalarRange()
         default_iso = float(scalar_range[0] + (scalar_range[1] - scalar_range[0]) * 0.5)
@@ -961,6 +991,7 @@ class VTKDatacubeRenderer:
         lo, hi = self._slice_bounds_for_axis(self.slice_axis)
         span = max(1, hi - lo)
         slice_position = 0.5 if self.slice_index is None else (self.slice_index - lo) / span
+        self._sync_slice_reference()
         return {
             "activeMapper": self._active_mapper_name,
             "selectedRenderPath": self._selected_render_path,
@@ -982,7 +1013,16 @@ class VTKDatacubeRenderer:
             "sliceAxis": self.slice_axis,
             "sliceIndex": self.slice_index,
             "sliceMaxIndex": hi,
+            "selectedAxisSize": hi + 1,
+            "sliceAxisSizes": {
+                "x": self._slice_bounds_for_axis("x")[1] + 1,
+                "y": self._slice_bounds_for_axis("y")[1] + 1,
+                "z": self._slice_bounds_for_axis("z")[1] + 1,
+            },
             "slicePosition": float(min(max(slice_position, 0.0), 1.0)),
+            "wcsSystem": self.selected_wcs_system,
+            "axesActorVisible": self.axes_actor_visible,
+            "sliceReference": dict(self._slice_reference),
             "cropping": {
                 "enabled": self.cropping_enabled,
                 "bounds": list(self.cropping_bounds_norm),
@@ -1003,6 +1043,13 @@ class VTKDatacubeRenderer:
 
     def get_dataset_import_details(self) -> dict[str, Any]:
         return dict(self._dataset_import_details)
+
+    def get_slice_reference(self) -> dict[str, Any]:
+        self._sync_slice_reference()
+        return dict(self._slice_reference)
+
+    def get_last_pointer_readout(self) -> dict[str, Any] | None:
+        return dict(self._last_pointer_readout) if isinstance(self._last_pointer_readout, dict) else None
 
     def get_camera_state(self) -> dict[str, Any]:
         camera = self.renderer.GetActiveCamera()
@@ -1223,6 +1270,24 @@ class VTKDatacubeRenderer:
                     else None
                 ),
                 # --- END PATCHED BLOCK ---
+                "wcsAvailable": bool(self._slice_reference.get("wcsAvailable")),
+                "selectedWcsSystem": self.selected_wcs_system,
+                "wcsAxesVisible": bool(self._slice_reference.get("wcsAxesVisible")),
+                "axesActorVisible": bool(self.axes_actor_visible and self.visualization_mode == "volume" and self.volume_render_mode != "slice"),
+                "selectedSliceAxis": self.slice_axis,
+                "selectedSliceIndex": self.slice_index,
+                "selectedAxisSize": self._slice_reference.get("selectedAxisSize"),
+                "lastPointerImageCoord": (
+                    dict(self._last_pointer_readout.get("imageCoord"))
+                    if isinstance(self._last_pointer_readout, dict) and isinstance(self._last_pointer_readout.get("imageCoord"), dict)
+                    else None
+                ),
+                "lastPointerWcsCoord": (
+                    dict(self._last_pointer_readout.get("wcsCoord"))
+                    if isinstance(self._last_pointer_readout, dict) and isinstance(self._last_pointer_readout.get("wcsCoord"), dict)
+                    else None
+                ),
+                "sliceReference": dict(self._slice_reference),
             }
         )
         return diagnostics
@@ -1266,6 +1331,8 @@ class VTKDatacubeRenderer:
         scale_mode_requested = None
         if isinstance(params.get("scaleMode"), str):
             scale_mode_requested = self._normalize_scale_mode(params["scaleMode"])
+        if isinstance(params.get("wcsSystem"), str):
+            self.set_selected_wcs_system(params["wcsSystem"])
         fidelity_requested = None
         if isinstance(params.get("renderFidelity"), str):
             fidelity_requested = self._normalize_render_fidelity(params["renderFidelity"])
@@ -1284,6 +1351,8 @@ class VTKDatacubeRenderer:
                 )
         if isinstance(params.get("shade"), bool):
             self.volume_shade_override = bool(params["shade"])
+        if isinstance(params.get("axesActorVisible"), bool):
+            self.axes_actor_visible = bool(params["axesActorVisible"])
         if isinstance(params.get("sliceAxis"), str):
             self._ensure_slice_pipeline()
             normalized_axis = params["sliceAxis"].strip().lower()
@@ -1359,6 +1428,9 @@ class VTKDatacubeRenderer:
         if self.isosurface_pipeline is not None:
             self.isosurface_pipeline.actor.SetVisibility(0 if is_volume else 1)
         self.outline_actor.SetVisibility(1 if is_volume else 0)
+        if self._axes_actor_added:
+            axes_visible = self.axes_actor_visible and (not show_slice)
+            self.axes_actor.SetVisibility(1 if axes_visible else 0)
         self.set_profile(self.current_profile)
 
     def _apply_volume_render_mode(self) -> None:
@@ -1410,6 +1482,7 @@ class VTKDatacubeRenderer:
             self.slice_mapper.SetOrientationToY()
         else:
             self.slice_mapper.SetOrientationToZ()
+        self._sync_slice_reference()
 
     def _apply_slice_window_level(self) -> None:
         lo, hi = self._volume_scalar_range
@@ -1439,16 +1512,45 @@ class VTKDatacubeRenderer:
         return (int(extent[4]), int(extent[5]))
 
     def _set_slice_index(self, index: int) -> None:
-        lo, hi = self._slice_bounds_for_axis(self.slice_axis)
-        safe = min(max(int(index), lo), hi)
+        safe = clamp_slice_index(self.slice_axis, int(index), self._image_dimensions_xyz())
         self.slice_index = safe
         self.slice_mapper.SetSliceNumber(safe)
+        self._sync_slice_reference()
 
     def _set_slice_from_normalized(self, position: float) -> None:
         lo, hi = self._slice_bounds_for_axis(self.slice_axis)
         t = min(max(float(position), 0.0), 1.0)
         idx = int(round(lo + (hi - lo) * t))
         self._set_slice_index(idx)
+
+    def _image_dimensions_xyz(self) -> tuple[int, int, int]:
+        if self.image_data is None:
+            return (1, 1, 1)
+        dims = self.image_data.GetDimensions()
+        return (int(dims[0]), int(dims[1]), int(dims[2]))
+
+    def _sync_slice_reference(self) -> None:
+        self._slice_reference = get_slice_reference(
+            self.dataset_path,
+            slice_axis=self.slice_axis,
+            slice_index=self.slice_index,
+            wcs_system=self.selected_wcs_system,
+        )
+
+    def set_selected_wcs_system(self, value: str) -> None:
+        self.selected_wcs_system = normalize_wcs_system(value)
+        self._sync_slice_reference()
+
+    def update_pointer_readout(self, x_norm: float, y_norm: float) -> dict[str, Any]:
+        self._last_pointer_readout = compute_pointer_readout(
+            self.dataset_path,
+            slice_axis=self.slice_axis,
+            slice_index=self.slice_index,
+            wcs_system=self.selected_wcs_system,
+            x_norm=x_norm,
+            y_norm=y_norm,
+        )
+        return dict(self._last_pointer_readout)
 
     def _volume_sample_distance_for_profile(self, profile: QualityProfile) -> float:
         spacing = (1.0, 1.0, 1.0)

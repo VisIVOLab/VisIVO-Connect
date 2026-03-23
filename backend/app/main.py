@@ -1221,6 +1221,8 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "eglContextErrorDetected": bool(session.loading_state.get("eglContextErrorDetected")),
             },
             "datasetLoading": dict(session.loading_state),
+            "sliceReference": session.renderer.get_slice_reference(),
+            "slicePointerReadout": session.renderer.get_last_pointer_readout(),
         }
     )
 
@@ -1494,6 +1496,20 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 if msg_type == "camera.pointer":
                     phase = "camera"
                     session.apply_pointer(payload)
+                    continue
+
+                if msg_type == "slice.pointer":
+                    phase = "slice-pointer"
+                    readout = session.update_slice_pointer(payload)
+                    if readout is not None:
+                        await _safe_ws_send_json(
+                            ws,
+                            {
+                                "type": "slice.readout",
+                                "sessionId": session.session_id,
+                                "slicePointerReadout": readout,
+                            },
+                        )
                     continue
 
                 if msg_type == "camera.wheel":

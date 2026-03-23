@@ -41,6 +41,14 @@
             ></video>
             <img id="fallbackImage" class="fallback-image hidden" alt="VisIVO Connect fallback stream" />
             <canvas id="gestureLayer" class="gesture-layer" aria-hidden="true"></canvas>
+            <div class="scientific-overlay hidden" id="scientificOverlay" aria-hidden="true">
+              <div class="scientific-axis scientific-axis-left" id="scientificAxisLeft"></div>
+              <div class="scientific-axis scientific-axis-bottom" id="scientificAxisBottom"></div>
+              <div class="scientific-readout" id="scientificReadout">
+                <div class="scientific-readout-primary" id="scientificReadoutPrimary">Slice readout unavailable</div>
+                <div class="scientific-readout-secondary" id="scientificReadoutSecondary"></div>
+              </div>
+            </div>
 
             <div class="stage-overlay" id="stageOverlay">
               <div class="overlay-card">
@@ -371,8 +379,19 @@
                       <option value="y">Y</option>
                       <option value="z" selected>Z</option>
                     </select>
-                    <input id="slicePosition" type="range" min="0" max="1" step="0.01" value="0.5" />
-                    <output id="slicePositionValue">0.50</output>
+                    <input id="slicePosition" type="range" min="0" max="0" step="1" value="0" />
+                    <output id="slicePositionValue">0 / 0</output>
+                    <label class="field compact-field">
+                      <span>WCS system</span>
+                      <select id="sliceWcsSystem">
+                        <option value="galactic" selected>Galactic</option>
+                        <option value="fk5">FK5 / J2000</option>
+                        <option value="ecliptic">Ecliptic</option>
+                      </select>
+                    </label>
+                    <div class="field compact-field">
+                      <span id="sliceWcsStatus">WCS unavailable</span>
+                    </div>
                   </div>
 
                   <div class="field" id="cropControls">
