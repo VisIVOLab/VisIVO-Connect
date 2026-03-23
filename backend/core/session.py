@@ -90,6 +90,12 @@ class RemoteRenderSession:
         self.last_activity_ns = time.time_ns()
         self.target_stream_fps = float(config.default_target_fps)
         self.target_bitrate_mbps = float(config.default_bitrate_mbps)
+        self.requested_render_scale = 1.0
+        self.adaptive_scaling_enabled = True
+        self.current_viewport_scale = 1.0
+        self.last_scale_update_ts = 0.0
+        self.smoothed_pipeline_ms: float | None = None
+        self._adaptive_scale_started = False
 
         self.peer_connection: RTCPeerConnection | None = None
         self.control_ws: Any | None = None
@@ -269,6 +275,17 @@ class RemoteRenderSession:
         self.last_activity_ns = time.time_ns()
         self._dirty = True
 
+    def _effective_viewport_scale(self) -> float:
+        requested = min(max(float(self.requested_render_scale), 0.4), 2.0)
+        adaptive = 1.0
+        if self.adaptive_scaling_enabled:
+            adaptive = min(max(float(self.current_viewport_scale), 0.5), 1.0)
+        return min(max(requested * adaptive, 0.4), 2.0)
+
+    def _apply_renderer_scale_locked(self, renderer: Any) -> None:
+        renderer.set_user_render_scale(self._effective_viewport_scale())
+        renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+
     def _normalize_quality_mode(self, mode: str | None) -> str | None:
         if not isinstance(mode, str):
             return None
@@ -296,7 +313,7 @@ class RemoteRenderSession:
         try:
             with slot.render_lock:
                 slot.renderer.set_mode(self.mode)
-                slot.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+                self._apply_renderer_scale_locked(slot.renderer)
         finally:
             self._release_renderer_slot(slot)
         self.request_render()
@@ -312,7 +329,7 @@ class RemoteRenderSession:
         slot = self._checkout_active_renderer_slot()
         try:
             with slot.render_lock:
-                slot.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+                self._apply_renderer_scale_locked(slot.renderer)
         finally:
             self._release_renderer_slot(slot)
         self.request_render()
@@ -451,11 +468,11 @@ class RemoteRenderSession:
             visual_mode = explicit_visual_mode
 
         if isinstance(render_scale, (int, float)):
+            self.requested_render_scale = min(max(float(render_scale), 0.4), 2.0)
             slot = self._checkout_active_renderer_slot()
             try:
                 with slot.render_lock:
-                    slot.renderer.set_user_render_scale(float(render_scale))
-                    slot.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+                    self._apply_renderer_scale_locked(slot.renderer)
             finally:
                 self._release_renderer_slot(slot)
 
@@ -548,6 +565,9 @@ class RemoteRenderSession:
                 "retiredRendererCount": self.loading_state.get("retiredRendererCount"),
                 "lastRendererSwapError": self.loading_state.get("lastRendererSwapError"),
                 "eglContextErrorDetected": bool(self.loading_state.get("eglContextErrorDetected")),
+                "adaptiveScalingEnabled": bool(self.adaptive_scaling_enabled),
+                "currentViewportScale": float(self.current_viewport_scale),
+                "smoothedPipelineMs": self.smoothed_pipeline_ms,
             },
             "datasetLoading": dict(self.loading_state),
             "sliceReference": slice_reference,
@@ -565,7 +585,7 @@ class RemoteRenderSession:
             self.cancel_background_tasks()
             previous_slot = self._active_renderer_slot
             replacement = self._create_renderer(dataset_path, dataset_load_mode="auto")
-            replacement.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+            self._apply_renderer_scale_locked(replacement)
             replacement.set_mode(self.mode)
             replacement.set_visualization_mode(self.visualization.mode)
             if self.visualization.iso_value is not None:
@@ -588,6 +608,11 @@ class RemoteRenderSession:
             self.stats = RenderStats()
             self._latest_frame = None
             self.latest_pipeline_metrics = {}
+            self.requested_render_scale = min(max(float(self.requested_render_scale), 0.4), 2.0)
+            self.current_viewport_scale = 1.0
+            self.last_scale_update_ts = 0.0
+            self.smoothed_pipeline_ms = None
+            self._adaptive_scale_started = False
             self._frame_serial = 0
             self._dirty = True
             self._last_input_ns = 0
@@ -635,6 +660,7 @@ class RemoteRenderSession:
         camera_state: dict[str, Any] | None,
     ) -> tuple[Any, FitsImportMetrics | None, dict[str, Any] | None]:
         renderer = RemoteRenderSession._create_renderer(dataset_path, dataset_load_mode="full")
+        renderer.set_user_render_scale(1.0)
         renderer.resize(viewport.width, viewport.height, viewport.dpr)
         renderer.set_mode(mode)
         renderer.set_visualization_mode(visualization_mode)
@@ -867,6 +893,7 @@ class RemoteRenderSession:
             finished_ns=finished_ns,
             session_started_ns=self._session_started_ns,
         )
+        self._update_adaptive_viewport_scale(pipeline_metrics, finished_ns)
         self._adapt_interactive_quality(render_ms)
 
         if self._last_input_ns:
@@ -909,6 +936,62 @@ class RemoteRenderSession:
             )
         self.runtime_metrics.first_frame_latency_ms = max(0.0, (delivered_ns - self._session_started_ns) / 1e6)
 
+    def _update_adaptive_viewport_scale(self, pipeline_metrics: dict[str, Any], finished_ns: int) -> None:
+        if not self.adaptive_scaling_enabled:
+            self.current_viewport_scale = 1.0
+            return
+        if self.loading_state.get("active"):
+            return
+        if self._dataset_load_mode() == "preview" and self.loading_state.get("refineRunning"):
+            return
+        if self.stats.delivered_frames < 1 and self._frame_serial < 3:
+            return
+
+        total_pipeline_ms = pipeline_metrics.get("totalFramePipelineTimeMs")
+        if not isinstance(total_pipeline_ms, (int, float)) or not float(total_pipeline_ms) > 0.0:
+            render_ms = float(pipeline_metrics.get("renderTimeMs", 0.0) or 0.0)
+            capture_ms = float(pipeline_metrics.get("frameCaptureReadbackTimeMs", 0.0) or 0.0)
+            encode_ms = float(pipeline_metrics.get("encodeTimeMs", 0.0) or 0.0)
+            total_pipeline_ms = render_ms + capture_ms + encode_ms
+        if not isinstance(total_pipeline_ms, (int, float)) or not float(total_pipeline_ms) > 0.0:
+            return
+
+        sample = float(total_pipeline_ms)
+        alpha = 0.25
+        if self.smoothed_pipeline_ms is None:
+            self.smoothed_pipeline_ms = sample
+        else:
+            self.smoothed_pipeline_ms = (1.0 - alpha) * float(self.smoothed_pipeline_ms) + alpha * sample
+
+        now_s = finished_ns / 1e9
+        if not self._adaptive_scale_started:
+            self._adaptive_scale_started = True
+            self.last_scale_update_ts = now_s
+            return
+        if now_s - self.last_scale_update_ts < 1.0:
+            return
+
+        next_scale = float(self.current_viewport_scale)
+        if self.smoothed_pipeline_ms > 60.0:
+            next_scale *= 0.9
+        elif self.smoothed_pipeline_ms < 30.0:
+            next_scale *= 1.05
+        next_scale = min(max(next_scale, 0.5), 1.0)
+
+        if abs(next_scale - self.current_viewport_scale) < 0.03:
+            self.last_scale_update_ts = now_s
+            return
+
+        self.current_viewport_scale = next_scale
+        self.last_scale_update_ts = now_s
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                self._apply_renderer_scale_locked(slot.renderer)
+        finally:
+            self._release_renderer_slot(slot)
+        self.request_render()
+
     def _adapt_interactive_quality(self, render_ms: float) -> None:
         if self.mode != "interactive":
             slot = self._checkout_active_renderer_slot()
@@ -934,6 +1017,14 @@ class RemoteRenderSession:
                     slot.renderer.set_interactive_boost(slot.renderer.interactive_boost * 0.95)
             finally:
                 self._release_renderer_slot(slot)
+
+    def adaptive_scaling_state(self) -> dict[str, Any]:
+        return {
+            "adaptiveScalingEnabled": bool(self.adaptive_scaling_enabled),
+            "currentViewportScale": float(self.current_viewport_scale),
+            "smoothedPipelineMs": self.smoothed_pipeline_ms,
+            "requestedRenderScale": float(self.requested_render_scale),
+        }
 
 
 class SessionManager:

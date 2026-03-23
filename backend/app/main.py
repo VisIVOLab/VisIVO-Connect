@@ -1184,6 +1184,9 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "highQualityRenderTimeMs": session.runtime_metrics.high_quality_render_time_ms,
                 "interactiveFps": session.runtime_metrics.interactive_fps,
                 "memoryRssMb": session.runtime_metrics.memory_rss_mb,
+                "adaptiveScalingEnabled": bool(session.adaptive_scaling_enabled),
+                "currentViewportScale": float(session.current_viewport_scale),
+                "smoothedPipelineMs": session.smoothed_pipeline_ms,
             },
             "pipelineMetrics": {
                 "activeMapperClass": pipeline_metrics.get("activeMapperClass"),
@@ -1198,6 +1201,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "totalFramePipelineTimeMs": _sample_mean(session.stats.total_frame_pipeline_time_ms),
             },
             "effectiveQualityProfiles": session.effective_quality_profiles(),
+            "adaptiveScaling": session.adaptive_scaling_state(),
             "iceMetrics": dict(session.latest_ice_metrics),
             "rendererDiagnostics": {
                 **session.renderer.get_renderer_diagnostics(),
@@ -1219,6 +1223,9 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "retiredRendererCount": session.loading_state.get("retiredRendererCount"),
                 "lastRendererSwapError": session.loading_state.get("lastRendererSwapError"),
                 "eglContextErrorDetected": bool(session.loading_state.get("eglContextErrorDetected")),
+                "adaptiveScalingEnabled": bool(session.adaptive_scaling_enabled),
+                "currentViewportScale": float(session.current_viewport_scale),
+                "smoothedPipelineMs": session.smoothed_pipeline_ms,
             },
             "datasetLoading": dict(session.loading_state),
             "sliceReference": session.renderer.get_slice_reference(),

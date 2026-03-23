@@ -130,6 +130,9 @@ const elements = {
   metricsInteractiveFps: document.getElementById("metricsInteractiveFps"),
   metricsHighQualityRenderTime: document.getElementById("metricsHighQualityRenderTime"),
   metricsMemoryRss: document.getElementById("metricsMemoryRss"),
+  metricsAdaptiveScalingEnabled: document.getElementById("metricsAdaptiveScalingEnabled"),
+  metricsCurrentViewportScale: document.getElementById("metricsCurrentViewportScale"),
+  metricsSmoothedPipelineMs: document.getElementById("metricsSmoothedPipelineMs"),
   metricsRenderPath: document.getElementById("metricsRenderPath"),
   metricsCapabilityProfile: document.getElementById("metricsCapabilityProfile"),
   metricsRenderBackend: document.getElementById("metricsRenderBackend"),
@@ -4067,6 +4070,7 @@ function renderMetrics(payload) {
   const runtime = payload?.runtimeMetrics || {};
   const importMetrics = payload?.importMetrics || {};
   const importDetails = payload?.importDetails || {};
+  const adaptiveScaling = payload?.adaptiveScaling || {};
   const renderer = payload?.rendererDiagnostics || {};
   const warmup = renderer?.warmupMetrics || {};
   const pipeline = payload?.pipelineMetrics || {};
@@ -4110,6 +4114,18 @@ function renderMetrics(payload) {
   setText(elements.metricsInteractiveFps, formatNumber(runtime.interactiveFps, "fps"));
   setText(elements.metricsHighQualityRenderTime, formatMs(runtime.highQualityRenderTimeMs));
   setText(elements.metricsMemoryRss, formatNumber(runtime.memoryRssMb, "MB"));
+  setText(
+    elements.metricsAdaptiveScalingEnabled,
+    formatBoolean(adaptiveScaling.adaptiveScalingEnabled ?? runtime.adaptiveScalingEnabled ?? renderer.adaptiveScalingEnabled)
+  );
+  setText(
+    elements.metricsCurrentViewportScale,
+    formatScale(adaptiveScaling.currentViewportScale ?? runtime.currentViewportScale ?? renderer.currentViewportScale ?? 1.0)
+  );
+  setText(
+    elements.metricsSmoothedPipelineMs,
+    formatMs(adaptiveScaling.smoothedPipelineMs ?? runtime.smoothedPipelineMs ?? renderer.smoothedPipelineMs)
+  );
   setText(elements.metricsRenderPath, renderer.selectedRenderPath || "-");
   setText(elements.metricsCapabilityProfile, renderer.capabilityProfile || "-");
   setText(elements.metricsRenderBackend, renderer.renderWindowBackend || "-");
