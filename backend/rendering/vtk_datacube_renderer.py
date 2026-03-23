@@ -120,6 +120,7 @@ class VTKDatacubeRenderer:
         self.window_to_image.SetInput(self.render_window)
         self.window_to_image.SetInputBufferTypeToRGB()
         self.window_to_image.ReadFrontBufferOff()
+        self._frame_rgb_buffer: np.ndarray | None = None
 
         mapper_cls = getattr(vtk, "vtkGPUVolumeRayCastMapper", None)
         self.gpu_volume_mapper = mapper_cls() if mapper_cls is not None else None
@@ -1792,7 +1793,10 @@ class VTKDatacubeRenderer:
         width, height, _ = vtk_image.GetDimensions()
         scalars = vtk_image.GetPointData().GetScalars()
         arr = numpy_support.vtk_to_numpy(scalars).reshape(height, width, 3)
-        rgb = np.ascontiguousarray(arr[::-1])
+        if self._frame_rgb_buffer is None or self._frame_rgb_buffer.shape != (height, width, 3):
+            self._frame_rgb_buffer = np.empty((height, width, 3), dtype=np.uint8)
+        self._frame_rgb_buffer[:] = arr[::-1]
+        rgb = self._frame_rgb_buffer
         self._handle_black_frame_detection(rgb)
         finished_ns = time.time_ns()
         mapper_diagnostics = self._active_mapper_diagnostics()
