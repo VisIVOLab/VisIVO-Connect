@@ -999,6 +999,7 @@ async def _run_full_resolution_refine(session: RemoteRenderSession) -> None:
     except Exception:
         log.exception("Session full-resolution refine failed session=%s", session.session_id)
         if session.control_ws is not None:
+            await _emit_state(session.control_ws, session, text="Preview kept active after refine failure")
             await _send_ws_error(
                 session.control_ws,
                 "dataset-refine-failed",
@@ -1012,6 +1013,17 @@ async def _run_full_resolution_refine(session: RemoteRenderSession) -> None:
 def _maybe_schedule_full_resolution_refine(session: RemoteRenderSession) -> None:
     if not session.can_schedule_full_resolution_refine():
         return
+    session.loading_state.update(
+        {
+            "refineScheduled": True,
+            "refineRunning": False,
+            "refineCompleted": False,
+            "refineFailed": False,
+            "lastRefineError": None,
+            "previewPinnedUntilFullReady": True,
+            "activeRepresentation": "preview",
+        }
+    )
     session._refine_task = asyncio.create_task(_run_full_resolution_refine(session))
 
 
@@ -1184,10 +1196,18 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
             "rendererDiagnostics": {
                 **session.renderer.get_renderer_diagnostics(),
                 "refinePending": bool(session.loading_state.get("refinePending")),
+                "refineScheduled": bool(session.loading_state.get("refineScheduled")),
+                "refineRunning": bool(session.loading_state.get("refineRunning")),
+                "refineCompleted": bool(session.loading_state.get("refineCompleted")),
+                "refineFailed": bool(session.loading_state.get("refineFailed")),
                 "datasetLoadingActive": bool(session.loading_state.get("active")),
                 "backgroundRefineEnabled": bool(session.loading_state.get("backgroundRefineEnabled")),
                 "backgroundRefineDeferred": bool(session.loading_state.get("backgroundRefineDeferred")),
                 "backgroundRefineDeferredReason": session.loading_state.get("backgroundRefineDeferredReason"),
+                "activeRepresentation": session.loading_state.get("activeRepresentation"),
+                "fullRendererReadyForSwap": bool(session.loading_state.get("fullRendererReadyForSwap")),
+                "lastRefineError": session.loading_state.get("lastRefineError"),
+                "previewPinnedUntilFullReady": bool(session.loading_state.get("previewPinnedUntilFullReady")),
             },
             "datasetLoading": dict(session.loading_state),
         }

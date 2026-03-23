@@ -61,18 +61,7 @@ class RemoteRenderSession:
         self.runtime_metrics.refresh_memory_rss()
         self.import_metrics: FitsImportMetrics | None = consume_last_fits_import_metrics()
         self.import_details: dict[str, Any] | None = consume_last_fits_import_details()
-        self.loading_state: dict[str, Any] = {
-            "active": False,
-            "phase": None,
-            "label": None,
-            "datasetPath": dataset_path,
-            "datasetLoadMode": self._dataset_load_mode(),
-            "largeDataset": self._is_large_dataset(),
-            "refinePending": self._should_refine_full_resolution(),
-        }
-        self.loading_state.update(self._background_refine_policy())
-        if not self.loading_state.get("backgroundRefineEnabled"):
-            self.loading_state["refinePending"] = False
+        self.loading_state: dict[str, Any] = self._initial_loading_state(dataset_path)
 
         self._latest_frame: FramePacket | None = None
         self.latest_pipeline_metrics: dict[str, Any] = {}
@@ -112,6 +101,30 @@ class RemoteRenderSession:
     def _should_refine_full_resolution(self) -> bool:
         return self._dataset_load_mode() == "preview" and self._is_large_dataset()
 
+    def _initial_loading_state(self, dataset_path: str | None) -> dict[str, Any]:
+        state = {
+            "active": False,
+            "phase": None,
+            "label": None,
+            "datasetPath": dataset_path,
+            "datasetLoadMode": self._dataset_load_mode(),
+            "largeDataset": self._is_large_dataset(),
+            "refinePending": self._should_refine_full_resolution(),
+            "refineScheduled": False,
+            "refineRunning": False,
+            "refineCompleted": False,
+            "refineFailed": False,
+            "activeRepresentation": "preview" if self._dataset_load_mode() == "preview" else "full",
+            "fullRendererReadyForSwap": False,
+            "lastRefineError": None,
+            "previewPinnedUntilFullReady": self._dataset_load_mode() == "preview",
+        }
+        state.update(self._background_refine_policy())
+        if not state.get("backgroundRefineEnabled"):
+            state["refinePending"] = False
+            state["previewPinnedUntilFullReady"] = False
+        return state
+
     def _background_refine_policy(self) -> dict[str, Any]:
         renderer_backend = None
         try:
@@ -147,6 +160,9 @@ class RemoteRenderSession:
                 **background_refine,
             }
         )
+        if not self.loading_state.get("backgroundRefineEnabled"):
+            self.loading_state["refinePending"] = False
+            self.loading_state["previewPinnedUntilFullReady"] = False
 
     def mark_refine_pending(self, pending: bool) -> None:
         self.loading_state["refinePending"] = bool(pending)
@@ -370,10 +386,18 @@ class RemoteRenderSession:
             "rendererDiagnostics": {
                 **self.renderer.get_renderer_diagnostics(),
                 "refinePending": bool(self.loading_state.get("refinePending")),
+                "refineScheduled": bool(self.loading_state.get("refineScheduled")),
+                "refineRunning": bool(self.loading_state.get("refineRunning")),
+                "refineCompleted": bool(self.loading_state.get("refineCompleted")),
+                "refineFailed": bool(self.loading_state.get("refineFailed")),
                 "datasetLoadingActive": bool(self.loading_state.get("active")),
                 "backgroundRefineEnabled": bool(self.loading_state.get("backgroundRefineEnabled")),
                 "backgroundRefineDeferred": bool(self.loading_state.get("backgroundRefineDeferred")),
                 "backgroundRefineDeferredReason": self.loading_state.get("backgroundRefineDeferredReason"),
+                "activeRepresentation": self.loading_state.get("activeRepresentation"),
+                "fullRendererReadyForSwap": bool(self.loading_state.get("fullRendererReadyForSwap")),
+                "lastRefineError": self.loading_state.get("lastRefineError"),
+                "previewPinnedUntilFullReady": bool(self.loading_state.get("previewPinnedUntilFullReady")),
             },
             "datasetLoading": dict(self.loading_state),
         }
@@ -419,18 +443,7 @@ class RemoteRenderSession:
             self.hello_received_ns = None
             self.stream_ready_sent_ns = None
             self.remote_answer_set_ns = None
-            self.loading_state = {
-                "active": False,
-                "phase": None,
-                "label": None,
-                "datasetPath": dataset_path,
-                "datasetLoadMode": self._dataset_load_mode(),
-                "largeDataset": self._is_large_dataset(),
-                "refinePending": self._should_refine_full_resolution(),
-            }
-            self.loading_state.update(self._background_refine_policy())
-            if not self.loading_state.get("backgroundRefineEnabled"):
-                self.loading_state["refinePending"] = False
+            self.loading_state = self._initial_loading_state(dataset_path)
             close_renderer = getattr(previous_renderer, "close", None)
             if callable(close_renderer):
                 close_renderer()
@@ -445,38 +458,92 @@ class RemoteRenderSession:
         if not policy["backgroundRefineEnabled"]:
             self.loading_state["refinePending"] = False
             return False
+        if self.loading_state.get("refineScheduled") or self.loading_state.get("refineRunning"):
+            return False
+        if self.loading_state.get("refineCompleted") or self.loading_state.get("refineFailed"):
+            return False
         if self._refine_task is not None and not self._refine_task.done():
             return False
         return True
+
+    @staticmethod
+    def _build_full_resolution_candidate(
+        dataset_path: str,
+        *,
+        viewport: Viewport,
+        mode: str,
+        visualization_mode: str,
+        iso_value: float | None,
+        volume_params: dict[str, Any],
+        camera_state: dict[str, Any] | None,
+    ) -> tuple[Any, FitsImportMetrics | None, dict[str, Any] | None]:
+        renderer = RemoteRenderSession._create_renderer(dataset_path, dataset_load_mode="full")
+        renderer.resize(viewport.width, viewport.height, viewport.dpr)
+        renderer.set_mode(mode)
+        renderer.set_visualization_mode(visualization_mode)
+        if iso_value is not None:
+            renderer.set_iso_value(iso_value)
+        if volume_params:
+            renderer.set_volume_params(volume_params)
+        if camera_state:
+            renderer.apply_camera_state(camera_state)
+        frame_rgb, _, _, _ = renderer.render_rgb_frame()
+        if getattr(frame_rgb, "size", 0) <= 0 or len(getattr(frame_rgb, "shape", ())) < 2:
+            raise RuntimeError("full-resolution renderer did not produce a valid frame")
+        import_metrics = consume_last_fits_import_metrics()
+        import_details = consume_last_fits_import_details()
+        return renderer, import_metrics, import_details
 
     async def _refine_full_resolution(self) -> None:
         dataset_path = getattr(self.renderer, "dataset_path", None)
         if not dataset_path:
             return
+        self.loading_state.update(
+            {
+                "refineScheduled": False,
+                "refineRunning": True,
+                "refineCompleted": False,
+                "refineFailed": False,
+                "fullRendererReadyForSwap": False,
+                "lastRefineError": None,
+                "previewPinnedUntilFullReady": True,
+            }
+        )
         self.set_loading_state(active=True, phase="refining-full", label="Refining full resolution")
         camera_state = None
+        volume_params = dict(self.visualization.volume_params)
         with self._renderer_lock:
             try:
                 camera_state = self.renderer.get_camera_state()
             except Exception:
                 camera_state = None
         try:
-            replacement = await asyncio.to_thread(self._create_renderer, dataset_path, dataset_load_mode="full")
+            replacement, import_metrics, import_details = await asyncio.to_thread(
+                self._build_full_resolution_candidate,
+                dataset_path,
+                viewport=self.viewport,
+                mode=self.mode,
+                visualization_mode=self.visualization.mode,
+                iso_value=self.visualization.iso_value,
+                volume_params=volume_params,
+                camera_state=camera_state,
+            )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            self.loading_state.update(
+                {
+                    "refineRunning": False,
+                    "refineFailed": True,
+                    "lastRefineError": str(exc),
+                    "fullRendererReadyForSwap": False,
+                    "previewPinnedUntilFullReady": False,
+                }
+            )
             self.set_loading_state(active=False, phase="refining-full", label="Full-resolution refine failed")
+            self.loading_state["refinePending"] = False
             raise
-
-        replacement.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
-        replacement.set_mode(self.mode)
-        replacement.set_visualization_mode(self.visualization.mode)
-        if self.visualization.iso_value is not None:
-            replacement.set_iso_value(self.visualization.iso_value)
-        if self.visualization.volume_params:
-            replacement.set_volume_params(self.visualization.volume_params)
-        if camera_state:
-            replacement.apply_camera_state(camera_state)
+        self.loading_state["fullRendererReadyForSwap"] = True
 
         with self._renderer_lock:
             if self._closed:
@@ -484,14 +551,24 @@ class RemoteRenderSession:
                 return
             previous_renderer = self.renderer
             self.renderer = replacement
-            self.import_metrics = consume_last_fits_import_metrics() or self.import_metrics
-            self.import_details = consume_last_fits_import_details() or self.import_details
+            self.import_metrics = import_metrics or self.import_metrics
+            self.import_details = import_details or self.import_details
             self.visualization = VisualizationState(
                 mode=self.renderer.get_visualization_mode(),
                 iso_value=self.renderer.get_iso_value(),
                 volume_params=self.renderer.get_volume_params(),
             )
-            self.mark_refine_pending(False)
+            self.loading_state.update(
+                {
+                    "refineRunning": False,
+                    "refineCompleted": True,
+                    "refineFailed": False,
+                    "refinePending": False,
+                    "activeRepresentation": "full",
+                    "previewPinnedUntilFullReady": False,
+                    "lastRefineError": None,
+                }
+            )
             self.set_loading_state(active=False, phase="complete", label="Full resolution ready")
             close_renderer = getattr(previous_renderer, "close", None)
             if callable(close_renderer):

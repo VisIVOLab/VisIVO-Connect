@@ -1038,6 +1038,10 @@ function syncDatasetLoadingFromState(message) {
     return;
   }
 
+  if (rendererDiagnostics.refineFailed) {
+    state.datasets.statusHint = "Preview kept active after full-resolution refine failed.";
+  }
+
   if (!state.datasets.loadingModalOpen && datasetLoading.active) {
     openDatasetLoadingModal(message?.datasetName || message?.datasetRelativePath || message?.datasetPath || "-");
   }
@@ -2019,7 +2023,9 @@ function handleSocketMessage(raw) {
       if (message.text) {
         logEvent(message.text);
       }
-      if (message.rendererDiagnostics?.refinePending) {
+      if (message.rendererDiagnostics?.refineFailed) {
+        state.datasets.statusHint = "Preview kept active after full-resolution refine failed.";
+      } else if (message.rendererDiagnostics?.refinePending || message.rendererDiagnostics?.refineRunning) {
         state.datasets.statusHint = "Preview loaded, refining full resolution...";
       } else if (message.rendererDiagnostics?.backgroundRefineDeferred) {
         state.datasets.statusHint = "Preview loaded. Full-resolution refine deferred on this platform.";
@@ -3908,6 +3914,14 @@ function renderMetrics(payload) {
   setMetricByLabel("Large dataset", formatBoolean(renderer.largeDataset));
   setMetricByLabel("Dataset load mode", renderer.datasetLoadMode || "-");
   setMetricByLabel("Refine pending", formatBoolean(renderer.refinePending));
+  setMetricByLabel("Refine scheduled", formatBoolean(renderer.refineScheduled));
+  setMetricByLabel("Refine running", formatBoolean(renderer.refineRunning));
+  setMetricByLabel("Refine completed", formatBoolean(renderer.refineCompleted));
+  setMetricByLabel("Refine failed", formatBoolean(renderer.refineFailed));
+  setMetricByLabel("Active representation", renderer.activeRepresentation || "-");
+  setMetricByLabel("Full renderer ready for swap", formatBoolean(renderer.fullRendererReadyForSwap));
+  setMetricByLabel("Preview pinned until full ready", formatBoolean(renderer.previewPinnedUntilFullReady));
+  setMetricByLabel("Last refine error", renderer.lastRefineError || "-");
   setMetricByLabel("Background refine enabled", formatBoolean(renderer.backgroundRefineEnabled));
   setMetricByLabel("Background refine deferred", formatBoolean(renderer.backgroundRefineDeferred));
   setMetricByLabel("Background refine deferred reason", renderer.backgroundRefineDeferredReason || "-");
