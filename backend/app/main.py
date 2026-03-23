@@ -190,6 +190,7 @@ async def _send_dataset_loading(
         "done": done,
     }
     if session is not None:
+        session.set_loading_state(active=not done, phase=phase, label=label)
         payload["sessionId"] = session.session_id
         if session.import_metrics is not None:
             payload["importMetrics"] = {
@@ -203,6 +204,7 @@ async def _send_dataset_loading(
             if session.import_details is not None:
                 payload["importDetails"] = dict(session.import_details)
         payload["warmupMetrics"] = session.renderer.get_warmup_metrics()
+        payload["datasetLoading"] = dict(session.loading_state)
     return await _safe_ws_send_json(ws, payload)
 
 
@@ -597,6 +599,26 @@ def _resolve_requested_dataset_path(requested_dataset_path: str | None) -> str |
     )
 
 
+def _is_probably_large_dataset(dataset_path: str | None) -> bool:
+    candidate = (dataset_path or "").strip()
+    if not candidate:
+        return False
+    try:
+        request = _parse_dataset_request(candidate)
+        with fits.open(request.path, memmap=True) as hdul:
+            _, hdu = _select_fits_hdu(hdul, request.fits_hdu)
+            data = getattr(hdu, "data", None)
+            if data is None:
+                return False
+            shape = tuple(int(v) for v in np.asarray(data).shape[-3:])
+            if len(shape) != 3:
+                return False
+            voxel_count = int(np.prod(shape, dtype=np.int64))
+            return voxel_count > config.large_dataset_voxels
+    except Exception:
+        return False
+
+
 def _pc_config_from_env() -> RTCConfiguration:
     effective_entries = _effective_backend_ice_entries()
     servers = [
@@ -948,6 +970,51 @@ async def _prime_session_frame(session: RemoteRenderSession) -> None:
         log.exception("Session background warmup failed session=%s", session.session_id)
 
 
+async def _run_full_resolution_refine(session: RemoteRenderSession) -> None:
+    try:
+        send_updates = False
+        dataset_path = getattr(session.renderer, "dataset_path", None)
+        if session.control_ws is not None:
+            send_updates = await _send_dataset_loading(
+                session.control_ws,
+                phase="refining-full",
+                label="Refining full resolution",
+                dataset_path=dataset_path,
+                session=session,
+            )
+        await session._refine_full_resolution()
+        if session.control_ws is not None:
+            if send_updates:
+                await _send_dataset_loading(
+                    session.control_ws,
+                    phase="complete",
+                    label="Full-resolution dataset ready",
+                    dataset_path=getattr(session.renderer, "dataset_path", None),
+                    session=session,
+                    done=True,
+                )
+            await _emit_state(session.control_ws, session, text="Full-resolution dataset ready")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("Session full-resolution refine failed session=%s", session.session_id)
+        if session.control_ws is not None:
+            await _send_ws_error(
+                session.control_ws,
+                "dataset-refine-failed",
+                "Could not finish full-resolution refine",
+                phase="dataset-refine",
+                retryable=True,
+                session_id=session.session_id,
+            )
+
+
+def _maybe_schedule_full_resolution_refine(session: RemoteRenderSession) -> None:
+    if not session.can_schedule_full_resolution_refine():
+        return
+    session._refine_task = asyncio.create_task(_run_full_resolution_refine(session))
+
+
 @app.get("/")
 async def index() -> Response:
     if not WEB_DIR.exists():
@@ -1114,7 +1181,12 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
             },
             "effectiveQualityProfiles": session.effective_quality_profiles(),
             "iceMetrics": dict(session.latest_ice_metrics),
-            "rendererDiagnostics": session.renderer.get_renderer_diagnostics(),
+            "rendererDiagnostics": {
+                **session.renderer.get_renderer_diagnostics(),
+                "refinePending": bool(session.loading_state.get("refinePending")),
+                "datasetLoadingActive": bool(session.loading_state.get("active")),
+            },
+            "datasetLoading": dict(session.loading_state),
         }
     )
 
@@ -1199,6 +1271,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await _emit_state(ws, session, text="Session connected")
                     if session.maybe_start_warmup_task():
                         asyncio.create_task(_prime_session_frame(session))
+                    _maybe_schedule_full_resolution_refine(session)
                     phase = "ready"
                     continue
 
@@ -1330,37 +1403,45 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                             phase=phase,
                             retryable=False,
                         )
-                    await _send_dataset_loading(
+                    large_candidate = _is_probably_large_dataset(dataset_path)
+                    loading_updates_enabled = await _send_dataset_loading(
                         ws,
-                        phase="opening-fits",
-                        label="Opening FITS",
+                        phase="building-preview" if large_candidate else "opening-fits",
+                        label="Building preview" if large_candidate else "Opening FITS",
                         dataset_path=dataset_path,
                         session=session,
                     )
                     session.switch_dataset(dataset_path)
-                    await _send_dataset_loading(
-                        ws,
-                        phase="initializing-renderer",
-                        label="Initializing renderer",
-                        dataset_path=dataset_path,
-                        session=session,
-                    )
-                    await _send_dataset_loading(
-                        ws,
-                        phase="warming-up",
-                        label="Warming up first frame",
-                        dataset_path=dataset_path,
-                        session=session,
-                    )
+                    if loading_updates_enabled:
+                        phase_name = "building-preview" if session._dataset_load_mode() == "preview" else "initializing-renderer"
+                        phase_label = "Preview ready" if session._dataset_load_mode() == "preview" else "Initializing renderer"
+                        loading_updates_enabled = await _send_dataset_loading(
+                            ws,
+                            phase=phase_name,
+                            label=phase_label,
+                            dataset_path=dataset_path,
+                            session=session,
+                        )
+                    if loading_updates_enabled:
+                        loading_updates_enabled = await _send_dataset_loading(
+                            ws,
+                            phase="warming-up",
+                            label="Warming up first frame",
+                            dataset_path=dataset_path,
+                            session=session,
+                        )
                     session.prime_first_frame()
-                    await _send_dataset_loading(
-                        ws,
-                        phase="complete",
-                        label="Dataset ready",
-                        dataset_path=dataset_path,
-                        session=session,
-                        done=True,
-                    )
+                    refine_pending = session._should_refine_full_resolution()
+                    if loading_updates_enabled:
+                        await _send_dataset_loading(
+                            ws,
+                            phase="complete",
+                            label="Preview ready, refining full resolution..." if refine_pending else "Dataset ready",
+                            dataset_path=dataset_path,
+                            session=session,
+                            done=True,
+                        )
+                    _maybe_schedule_full_resolution_refine(session)
                     await _emit_state(ws, session, text=f"Dataset loaded: {selected_file.name}")
                     continue
 

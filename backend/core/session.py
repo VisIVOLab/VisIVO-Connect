@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 import uuid
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -29,13 +30,20 @@ class Viewport:
 
 
 class RemoteRenderSession:
-    def __init__(self, dataset_path: str | None = None) -> None:
+    @staticmethod
+    def _create_renderer(dataset_path: str | None, *, dataset_load_mode: str) -> Any:
         from backend.rendering.vtk_datacube_renderer import VTKDatacubeRenderer
 
+        try:
+            return VTKDatacubeRenderer(dataset_path=dataset_path, dataset_load_mode=dataset_load_mode)
+        except TypeError:
+            return VTKDatacubeRenderer(dataset_path=dataset_path)
+
+    def __init__(self, dataset_path: str | None = None) -> None:
         config = load_config()
         self.session_id = str(uuid.uuid4())
         self._session_started_ns = time.time_ns()
-        self.renderer = VTKDatacubeRenderer(dataset_path=dataset_path)
+        self.renderer = self._create_renderer(dataset_path, dataset_load_mode="auto")
         self._session_initialized_ns = time.time_ns()
         self.viewport = Viewport()
 
@@ -52,6 +60,15 @@ class RemoteRenderSession:
         self.runtime_metrics.refresh_memory_rss()
         self.import_metrics: FitsImportMetrics | None = consume_last_fits_import_metrics()
         self.import_details: dict[str, Any] | None = consume_last_fits_import_details()
+        self.loading_state: dict[str, Any] = {
+            "active": False,
+            "phase": None,
+            "label": None,
+            "datasetPath": dataset_path,
+            "datasetLoadMode": self._dataset_load_mode(),
+            "largeDataset": self._is_large_dataset(),
+            "refinePending": self._should_refine_full_resolution(),
+        }
 
         self._latest_frame: FramePacket | None = None
         self.latest_pipeline_metrics: dict[str, Any] = {}
@@ -74,14 +91,50 @@ class RemoteRenderSession:
         self.latest_ice_metrics: dict[str, Any] = {}
         self._warmup_task_started = False
         self.requested_quality_profiles: dict[str, Any] = {}
+        self._refine_task: asyncio.Task[None] | None = None
 
         self.request_render()
+
+    def _dataset_load_mode(self) -> str:
+        if isinstance(self.import_details, dict):
+            mode = self.import_details.get("datasetLoadMode")
+            if isinstance(mode, str) and mode in {"preview", "full"}:
+                return mode
+        return "full"
+
+    def _is_large_dataset(self) -> bool:
+        return bool(isinstance(self.import_details, dict) and self.import_details.get("largeDataset"))
+
+    def _should_refine_full_resolution(self) -> bool:
+        return self._dataset_load_mode() == "preview" and self._is_large_dataset()
+
+    def set_loading_state(self, *, active: bool, phase: str | None, label: str | None) -> None:
+        self.loading_state.update(
+            {
+                "active": bool(active),
+                "phase": phase,
+                "label": label,
+                "datasetPath": getattr(self.renderer, "dataset_path", None),
+                "datasetLoadMode": self._dataset_load_mode(),
+                "largeDataset": self._is_large_dataset(),
+                "refinePending": self._should_refine_full_resolution(),
+            }
+        )
+
+    def mark_refine_pending(self, pending: bool) -> None:
+        self.loading_state["refinePending"] = bool(pending)
+
+    def cancel_background_tasks(self) -> None:
+        if self._refine_task is not None:
+            self._refine_task.cancel()
+            self._refine_task = None
 
     def close(self) -> None:
         with self._renderer_lock:
             if self._closed:
                 return
             self._closed = True
+            self.cancel_background_tasks()
             try:
                 self.renderer.close()
             except Exception:
@@ -287,7 +340,12 @@ class RemoteRenderSession:
             "visualizationMode": self.visualization.mode,
             "isoValue": self.visualization.iso_value,
             "volume": self.renderer.get_volume_params(),
-            "rendererDiagnostics": self.renderer.get_renderer_diagnostics(),
+            "rendererDiagnostics": {
+                **self.renderer.get_renderer_diagnostics(),
+                "refinePending": bool(self.loading_state.get("refinePending")),
+                "datasetLoadingActive": bool(self.loading_state.get("active")),
+            },
+            "datasetLoading": dict(self.loading_state),
         }
         scalar_lo, scalar_hi = self.renderer.get_scalar_range()
         payload["isoRangeMin"] = scalar_lo
@@ -297,11 +355,10 @@ class RemoteRenderSession:
         return payload
 
     def switch_dataset(self, dataset_path: str) -> None:
-        from backend.rendering.vtk_datacube_renderer import VTKDatacubeRenderer
-
         with self._renderer_lock:
+            self.cancel_background_tasks()
             previous_renderer = self.renderer
-            replacement = VTKDatacubeRenderer(dataset_path=dataset_path)
+            replacement = self._create_renderer(dataset_path, dataset_load_mode="auto")
             replacement.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
             replacement.set_mode(self.mode)
             replacement.set_visualization_mode(self.visualization.mode)
@@ -332,9 +389,77 @@ class RemoteRenderSession:
             self.hello_received_ns = None
             self.stream_ready_sent_ns = None
             self.remote_answer_set_ns = None
+            self.loading_state = {
+                "active": False,
+                "phase": None,
+                "label": None,
+                "datasetPath": dataset_path,
+                "datasetLoadMode": self._dataset_load_mode(),
+                "largeDataset": self._is_large_dataset(),
+                "refinePending": self._should_refine_full_resolution(),
+            }
             close_renderer = getattr(previous_renderer, "close", None)
             if callable(close_renderer):
                 close_renderer()
+        if self._is_large_dataset():
+            gc.collect()
+
+    def can_schedule_full_resolution_refine(self) -> bool:
+        if self._closed or not self._should_refine_full_resolution():
+            return False
+        if self._refine_task is not None and not self._refine_task.done():
+            return False
+        return True
+
+    async def _refine_full_resolution(self) -> None:
+        dataset_path = getattr(self.renderer, "dataset_path", None)
+        if not dataset_path:
+            return
+        self.set_loading_state(active=True, phase="refining-full", label="Refining full resolution")
+        camera_state = None
+        with self._renderer_lock:
+            try:
+                camera_state = self.renderer.get_camera_state()
+            except Exception:
+                camera_state = None
+        try:
+            replacement = await asyncio.to_thread(self._create_renderer, dataset_path, dataset_load_mode="full")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.set_loading_state(active=False, phase="refining-full", label="Full-resolution refine failed")
+            raise
+
+        replacement.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+        replacement.set_mode(self.mode)
+        replacement.set_visualization_mode(self.visualization.mode)
+        if self.visualization.iso_value is not None:
+            replacement.set_iso_value(self.visualization.iso_value)
+        if self.visualization.volume_params:
+            replacement.set_volume_params(self.visualization.volume_params)
+        if camera_state:
+            replacement.apply_camera_state(camera_state)
+
+        with self._renderer_lock:
+            if self._closed:
+                replacement.close()
+                return
+            previous_renderer = self.renderer
+            self.renderer = replacement
+            self.import_metrics = consume_last_fits_import_metrics() or self.import_metrics
+            self.import_details = consume_last_fits_import_details() or self.import_details
+            self.visualization = VisualizationState(
+                mode=self.renderer.get_visualization_mode(),
+                iso_value=self.renderer.get_iso_value(),
+                volume_params=self.renderer.get_volume_params(),
+            )
+            self.mark_refine_pending(False)
+            self.set_loading_state(active=False, phase="complete", label="Full resolution ready")
+            close_renderer = getattr(previous_renderer, "close", None)
+            if callable(close_renderer):
+                close_renderer()
+        gc.collect()
+        self.request_render()
 
     def effective_quality_profiles(self) -> dict[str, Any]:
         viewport_width = self.viewport.width

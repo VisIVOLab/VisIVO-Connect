@@ -42,6 +42,10 @@ class AppConfig:
     default_hq_detail_preset: str
     ws_reconnect_base_delay_ms: int
     ws_reconnect_max_delay_ms: int
+    large_dataset_voxels: int
+    prewarm_max_voxels: int
+    preview_target_voxels: int
+    session_memory_budget_mb: int
 
     @property
     def is_production(self) -> bool:
@@ -62,6 +66,10 @@ class AppConfig:
                 "hqDetailPreset": self.default_hq_detail_preset,
                 "wsReconnectBaseDelayMs": self.ws_reconnect_base_delay_ms,
                 "wsReconnectMaxDelayMs": self.ws_reconnect_max_delay_ms,
+                "largeDatasetVoxels": self.large_dataset_voxels,
+                "prewarmMaxVoxels": self.prewarm_max_voxels,
+                "previewTargetVoxels": self.preview_target_voxels,
+                "sessionMemoryBudgetMb": self.session_memory_budget_mb,
             },
         }
 
@@ -93,6 +101,10 @@ class AppConfig:
             "defaultHqDetailPreset": self.default_hq_detail_preset,
             "wsReconnectBaseDelayMs": self.ws_reconnect_base_delay_ms,
             "wsReconnectMaxDelayMs": self.ws_reconnect_max_delay_ms,
+            "largeDatasetVoxels": self.large_dataset_voxels,
+            "prewarmMaxVoxels": self.prewarm_max_voxels,
+            "previewTargetVoxels": self.preview_target_voxels,
+            "sessionMemoryBudgetMb": self.session_memory_budget_mb,
             "backendIceEntries": len(self.ice_servers),
             "clientIceEntries": len(self.client_ice_servers),
         }
@@ -389,4 +401,8 @@ def load_config() -> AppConfig:
         default_hq_detail_preset=_normalize_hq_preset(os.getenv("VISIVO_DEFAULT_HQ_DETAIL_PRESET")),
         ws_reconnect_base_delay_ms=_parse_int_env("VISIVO_WS_RECONNECT_BASE_DELAY_MS", 1000, minimum=100, maximum=30000),
         ws_reconnect_max_delay_ms=_parse_int_env("VISIVO_WS_RECONNECT_MAX_DELAY_MS", 15000, minimum=500, maximum=120000),
+        large_dataset_voxels=_parse_int_env("VISIVO_LARGE_DATASET_VOXELS", 150_000_000, minimum=1),
+        prewarm_max_voxels=_parse_int_env("VISIVO_PREWARM_MAX_VOXELS", 64_000_000, minimum=1),
+        preview_target_voxels=_parse_int_env("VISIVO_PREVIEW_TARGET_VOXELS", 24_000_000, minimum=1),
+        session_memory_budget_mb=_parse_int_env("VISIVO_SESSION_MEMORY_BUDGET_MB", 2048, minimum=128),
     )

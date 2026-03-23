@@ -321,10 +321,15 @@ const state = {
     detailsLoading: false,
     detailsError: "",
     loadingModalOpen: false,
+    loadingPhase: "",
+    loadingSessionId: "",
+    loadingDatasetPath: "",
+    loadingComplete: false,
     loadingStatus: "",
     loadingSteps: [],
     restoredMessage: "",
     restoredTone: "ok",
+    statusHint: "",
   },
   persistence: {
     storageKey: "visivo-connect.state.v1",
@@ -911,14 +916,20 @@ function closeDatasetBrowserModal() {
 
 function openDatasetLoadingModal(datasetName) {
   state.datasets.loadingModalOpen = true;
+  state.datasets.loadingPhase = "opening-fits";
+  state.datasets.loadingSessionId = state.sessionId || "";
+  state.datasets.loadingDatasetPath = state.datasets.activeDatasetPath || "";
+  state.datasets.loadingComplete = false;
   state.datasets.loadingStatus = "Opening FITS";
   state.datasets.loadingSteps = [
     { key: "opening-fits", label: "Opening FITS", state: "active" },
     { key: "reading-hdu", label: "Reading HDU", state: "pending" },
     { key: "sanitizing-data", label: "Sanitizing data", state: "pending" },
     { key: "building-vtk", label: "Building vtkImageData", state: "pending" },
+    { key: "building-preview", label: "Building preview", state: "pending" },
     { key: "initializing-renderer", label: "Initializing renderer", state: "pending" },
     { key: "warming-up", label: "Warming up first frame", state: "pending" },
+    { key: "refining-full", label: "Full-resolution refine", state: "pending" },
     { key: "complete", label: "Dataset ready", state: "pending" },
   ];
   elements.datasetLoadingFile.textContent = datasetName || "-";
@@ -929,21 +940,42 @@ function openDatasetLoadingModal(datasetName) {
 
 function closeDatasetLoadingModal() {
   state.datasets.loadingModalOpen = false;
+  state.datasets.loadingPhase = "";
+  state.datasets.loadingComplete = false;
   elements.datasetLoadingModal.classList.add("hidden");
   elements.datasetLoadingModal.setAttribute("aria-hidden", "true");
+  renderDatasetBrowser();
 }
 
-function updateDatasetLoadingPhase(phase, label, importMetrics) {
+function updateDatasetLoadingPhase(phase, label, importMetrics, datasetLoading, rendererDiagnostics) {
+  state.datasets.loadingPhase = phase || state.datasets.loadingPhase || "opening-fits";
+  state.datasets.loadingSessionId = datasetLoading?.sessionId || state.datasets.loadingSessionId || state.sessionId || "";
+  state.datasets.loadingDatasetPath = datasetLoading?.datasetPath || state.datasets.loadingDatasetPath || state.datasets.activeDatasetPath || "";
   const phaseToStepKeys = {
     "opening-fits": ["opening-fits"],
+    "building-preview": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "building-preview"],
     "initializing-renderer": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "initializing-renderer"],
-    "warming-up": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "initializing-renderer", "warming-up"],
-    "complete": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "initializing-renderer", "warming-up", "complete"],
+    "warming-up": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "building-preview", "initializing-renderer", "warming-up"],
+    "refining-full": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "building-preview", "initializing-renderer", "warming-up", "complete", "refining-full"],
+    "complete": ["opening-fits", "reading-hdu", "sanitizing-data", "building-vtk", "building-preview", "initializing-renderer", "warming-up", "complete"],
   };
   const doneKeys = phaseToStepKeys[phase] || [];
+  const refinePending = Boolean(datasetLoading?.refinePending || rendererDiagnostics?.refinePending);
+  state.datasets.loadingComplete = phase === "complete";
   state.datasets.loadingStatus = label || state.datasets.loadingStatus || "Loading dataset";
+  if (phase === "complete" && refinePending) {
+    state.datasets.loadingStatus = "Preview loaded, refining full resolution...";
+    state.datasets.statusHint = "Preview loaded, refining full resolution...";
+  } else if (phase === "refining-full" || refinePending) {
+    state.datasets.statusHint = "Preview loaded, refining full resolution...";
+  } else if (phase === "complete") {
+    state.datasets.statusHint = "";
+  }
   state.datasets.loadingSteps = state.datasets.loadingSteps.map((step) => {
     if (phase === "complete") {
+      if (step.key === "refining-full" && refinePending) {
+        return { ...step, state: "active" };
+      }
       return { ...step, state: "done" };
     }
     if (doneKeys.includes(step.key)) {
@@ -983,6 +1015,41 @@ function renderDatasetLoading() {
     text.textContent = step.detail ? `${step.label} · ${step.detail}` : step.label;
     row.append(indicator, text);
     elements.datasetLoadingSteps.appendChild(row);
+  }
+}
+
+function syncDatasetLoadingFromState(message) {
+  const datasetLoading = message?.datasetLoading;
+  const rendererDiagnostics = message?.rendererDiagnostics || {};
+  if (!datasetLoading || typeof datasetLoading !== "object") {
+    if (
+      state.datasets.loadingModalOpen
+      && (state.rtc.connectedAtMs > 0 || state.transport.wsFallbackActive || state.videoTrackFound)
+    ) {
+      closeDatasetLoadingModal();
+    }
+    return;
+  }
+
+  if (!state.datasets.loadingModalOpen && datasetLoading.active) {
+    openDatasetLoadingModal(message?.datasetName || message?.datasetRelativePath || message?.datasetPath || "-");
+  }
+
+  if (state.datasets.loadingModalOpen) {
+    updateDatasetLoadingPhase(
+      datasetLoading.phase || (datasetLoading.refinePending ? "refining-full" : "complete"),
+      datasetLoading.label || (datasetLoading.refinePending ? "Preview loaded, refining full resolution..." : "Dataset ready"),
+      null,
+      datasetLoading,
+      rendererDiagnostics
+    );
+    if (!datasetLoading.active && (state.rtc.connectedAtMs > 0 || state.transport.wsFallbackActive || state.videoTrackFound)) {
+      closeDatasetLoadingModal();
+    }
+  }
+  if (!datasetLoading.active && !datasetLoading.refinePending) {
+    state.datasets.statusHint = "";
+    renderDatasetBrowser();
   }
 }
 
@@ -1159,13 +1226,14 @@ function renderDatasetBrowser() {
     ? (state.datasets.activeDatasetPath ? `/${state.datasets.activeDatasetPath}` : "No dataset selected")
     : "Browser unavailable.";
   const summaryStatus = state.datasets.restoredMessage
+    || state.datasets.statusHint
     || (!state.datasets.browserEnabled
       ? "Configure VISIVO_DATASET_ROOT to enable the dataset browser."
       : (state.datasets.error || "Open the dataset browser to browse and inspect FITS files."));
   elements.datasetBrowserStatus.textContent = summaryStatus;
   elements.datasetBrowserStatus.dataset.tone = state.datasets.restoredMessage
     ? state.datasets.restoredTone
-    : (state.datasets.error ? "danger" : "subtle");
+    : (state.datasets.statusHint ? "warn" : (state.datasets.error ? "danger" : "subtle"));
 
   if (!state.datasets.modalOpen) {
     return;
@@ -1796,6 +1864,10 @@ function openSocket() {
     cleanupPeerConnection();
     const closeText = `WS closed ${event.code}${event.reason ? ` ${event.reason}` : ""}`;
     logEvent(closeText);
+    if (state.datasets.loadingModalOpen) {
+      state.datasets.loadingStatus = "Connection lost while loading. Reconnecting…";
+      renderDatasetLoading();
+    }
 
     if (socket.__suppressReconnect) {
       return;
@@ -1940,6 +2012,19 @@ function handleSocketMessage(raw) {
       if (message.text) {
         logEvent(message.text);
       }
+      if (message.rendererDiagnostics?.refinePending) {
+        state.datasets.statusHint = "Preview loaded, refining full resolution...";
+      } else if (!message.datasetLoading?.active) {
+        state.datasets.statusHint = "";
+      }
+      syncDatasetLoadingFromState(message);
+      if (
+        state.datasets.loadingModalOpen
+        && !message?.datasetLoading?.active
+        && (state.rtc.connectedAtMs > 0 || state.transport.wsFallbackActive || state.videoTrackFound)
+      ) {
+        closeDatasetLoadingModal();
+      }
       break;
     case "stream-ready":
       logEvent("VisIVO Connect stream ready");
@@ -1948,10 +2033,35 @@ function handleSocketMessage(raw) {
       if (message.datasetName) {
         elements.datasetLoadingFile.textContent = message.datasetName;
       }
-      updateDatasetLoadingPhase(message.phase, message.label, message.importMetrics);
+      if (message.phase === "refining-full") {
+        state.datasets.statusHint = "Preview loaded, refining full resolution...";
+        renderDatasetBrowser();
+        break;
+      }
+      if (message.phase === "complete" && !state.datasets.loadingModalOpen) {
+        if (message.datasetLoading?.refinePending) {
+          state.datasets.statusHint = "Preview loaded, refining full resolution...";
+        } else {
+          state.datasets.statusHint = "";
+        }
+        renderDatasetBrowser();
+        break;
+      }
+      if (!state.datasets.loadingModalOpen) {
+        openDatasetLoadingModal(message.datasetName || message.datasetPath || "-");
+      }
+      updateDatasetLoadingPhase(
+        message.phase,
+        message.label,
+        message.importMetrics,
+        message.datasetLoading,
+        message.rendererDiagnostics
+      );
       if (message.done) {
         window.setTimeout(() => {
-          closeDatasetLoadingModal();
+          if (state.rtc.connectedAtMs > 0 || state.transport.wsFallbackActive || state.videoTrackFound) {
+            closeDatasetLoadingModal();
+          }
           fetchDatasetBrowser(state.datasets.currentPath, { force: true });
         }, 250);
       }
@@ -1959,6 +2069,9 @@ function handleSocketMessage(raw) {
     case "ws-stream.started":
       state.transport.wsFallbackActive = true;
       logEvent(`WS fallback started (${Math.round(Number(message.fps) || 0)} fps)`);
+      if (state.datasets.loadingModalOpen && state.datasets.loadingComplete) {
+        closeDatasetLoadingModal();
+      }
       break;
     case "ws-stream.stopped":
       state.transport.wsFallbackActive = false;
@@ -1971,6 +2084,7 @@ function handleSocketMessage(raw) {
       setConnectionState("error", "danger", message.message || "Server error");
       if (message.phase === "dataset-switch") {
         closeDatasetLoadingModal();
+        state.datasets.statusHint = "";
       }
       if (
         state.persistence.restored
@@ -2108,6 +2222,9 @@ function maybeCreatePeerConnection() {
       stopWsFallback("", false);
       elements.stageOverlay.classList.add("hidden");
       logEvent("VisIVO Connect track attached");
+      if (state.datasets.loadingModalOpen && state.datasets.loadingComplete) {
+        closeDatasetLoadingModal();
+      }
     }
   });
 
@@ -2136,6 +2253,9 @@ function maybeCreatePeerConnection() {
       elements.stageOverlay.classList.add("hidden");
       stopWsFallback("", false);
       setConnectionState("connected", "ok");
+      if (state.datasets.loadingModalOpen && state.datasets.loadingComplete) {
+        closeDatasetLoadingModal();
+      }
     }
     if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
       setConnectionState("reconnecting", "warn", "RTC reconnecting");
@@ -3744,6 +3864,7 @@ function renderMetrics(payload) {
   const formatScientific = (value) => (Number.isFinite(value) ? Number(value).toExponential(3) : "-");
   const formatFixed = (value, digits = 3) => (Number.isFinite(value) ? Number(value).toFixed(digits) : "-");
   const formatPercent = (value, digits = 2) => (Number.isFinite(value) ? `${Number(value).toFixed(digits)}%` : "-");
+  const formatBytesEstimate = (value) => (Number.isFinite(value) ? formatNumber(Number(value) / (1024 * 1024), "MB") : "-");
 
   setText(elements.metricsSessionId, payload?.sessionId || state.sessionId || "-");
   setText(elements.metricsVisualizationMode, payload?.visualizationMode || "-");
@@ -3775,6 +3896,24 @@ function renderMetrics(payload) {
   setText(elements.metricsFallbackReason, renderer.fallbackReason || "-");
   setText(elements.metricsWarmupRenderWindow, formatMs(warmup.renderWindowCreationMs));
   setText(elements.metricsWarmupDatasetLoad, formatMs(warmup.datasetLoadMs));
+  setMetricByLabel("Large dataset", formatBoolean(renderer.largeDataset));
+  setMetricByLabel("Dataset load mode", renderer.datasetLoadMode || "-");
+  setMetricByLabel("Refine pending", formatBoolean(renderer.refinePending));
+  setMetricByLabel("Dataset voxels", formatInteger(renderer.datasetVoxelCount));
+  setMetricByLabel("Dataset bytes estimate", formatBytesEstimate(renderer.datasetBytesEstimate));
+  setMetricByLabel(
+    "Preview shape",
+    Array.isArray(renderer.previewShape) && renderer.previewShape.length === 3 ? renderer.previewShape.join("×") : "-"
+  );
+  setMetricByLabel("Preview voxels", formatInteger(renderer.previewVoxelCount));
+  setMetricByLabel(
+    "Preview downsample factor",
+    Array.isArray(renderer.previewDownsampleFactor) && renderer.previewDownsampleFactor.length === 3
+      ? renderer.previewDownsampleFactor.join("×")
+      : "-"
+  );
+  setMetricByLabel("Preview bytes estimate", formatBytesEstimate(renderer.previewBytesEstimate));
+  setMetricByLabel("Memory policy", renderer.memoryPolicyApplied || "-");
   setText(elements.metricsWarmupScalarSummary, formatMs(warmup.scalarSummaryMs));
   setText(elements.metricsWarmupScalarSummaryCacheHit, formatBoolean(warmup.scalarSummaryCacheHit));
   setText(elements.metricsWarmupScalarSummarySampleCount, formatInteger(warmup.scalarSummarySampleCount));
@@ -3794,6 +3933,8 @@ function renderMetrics(payload) {
   setText(elements.metricsWarmupProbeAfterRender, formatMs(warmup.capabilityProbeAfterRenderMs));
   setText(elements.metricsWarmupFirstVisibleRender, formatMs(warmup.firstVisibleRenderWarmupMs));
   setText(elements.metricsWarmupHiddenPrewarm, formatMs(warmup.hiddenVolumePrewarmMs));
+  setMetricByLabel("Hidden prewarm skipped", formatBoolean(renderer.hiddenVolumePrewarmSkipped));
+  setMetricByLabel("Hidden prewarm skip reason", renderer.hiddenVolumePrewarmSkipReason || "-");
   setText(
     elements.metricsWarmupHiddenPrewarmSize,
     Number.isFinite(warmup.hiddenVolumePrewarmWidth) && Number.isFinite(warmup.hiddenVolumePrewarmHeight)

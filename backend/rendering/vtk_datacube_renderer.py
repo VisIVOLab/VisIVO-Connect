@@ -5,6 +5,7 @@ import sys
 import time
 import logging
 import re
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ import vtk
 from vtk.util import numpy_support
 
 from backend.core.models import HIGH_QUALITY_PROFILE, INTERACTIVE_PROFILE, QualityProfile
+from backend.core.config import load_config
+from backend.core.observability import peek_last_fits_import_details
 from backend.data import load_image_data
 from backend.rendering.isosurface_pipeline import build_isosurface_pipeline
 from backend.rendering.vlva_colormaps import (
@@ -41,8 +44,9 @@ class VTKDatacubeRenderer:
     - `high-quality`: refined rendering after input release
     """
 
-    def __init__(self, dataset_path: str | None = None) -> None:
+    def __init__(self, dataset_path: str | None = None, *, dataset_load_mode: str = "auto") -> None:
         self.dataset_path = dataset_path
+        self.dataset_load_mode = str(dataset_load_mode or "auto").strip().lower()
         self.window_width = 1280
         self.window_height = 720
         self.stability_mode = os.getenv("VISIVO_STABILITY_MODE", "1" if sys.platform == "darwin" else "0") == "1"
@@ -79,11 +83,14 @@ class VTKDatacubeRenderer:
             "hiddenVolumePrewarmMs": None,
             "hiddenVolumePrewarmWidth": None,
             "hiddenVolumePrewarmHeight": None,
+            "hiddenVolumePrewarmSkipped": False,
+            "hiddenVolumePrewarmSkipReason": None,
             "totalRendererWarmupMs": 0.0,
             "scalarSummaryCacheHit": False,
             "scalarSummarySampleCount": 0.0,
         }
         self._dataset_scalar_summary: dict[str, Any] | None = None
+        self._dataset_import_details: dict[str, Any] = {}
         self._gpu_volume_prewarmed = False
 
         self.renderer = vtk.vtkRenderer()
@@ -240,11 +247,12 @@ class VTKDatacubeRenderer:
         )
 
     def _load_image_data(self) -> vtk.vtkImageData:
-        return load_image_data(self.dataset_path)
+        return load_image_data(self.dataset_path, load_mode=self.dataset_load_mode)
 
     def _configure_scene(self) -> None:
         dataset_started_ns = time.time_ns()
         self.image_data = self._load_image_data()
+        self._dataset_import_details = peek_last_fits_import_details() or {}
         self._warmup_metrics["datasetLoadMs"] = (time.time_ns() - dataset_started_ns) / 1e6
         scalar_summary_started_ns = time.time_ns()
         self._log_scalar_summary(self.image_data)
@@ -993,6 +1001,36 @@ class VTKDatacubeRenderer:
     def get_warmup_metrics(self) -> dict[str, Any]:
         return dict(self._warmup_metrics)
 
+    def get_dataset_import_details(self) -> dict[str, Any]:
+        return dict(self._dataset_import_details)
+
+    def get_camera_state(self) -> dict[str, Any]:
+        camera = self.renderer.GetActiveCamera()
+        return {
+            "position": list(camera.GetPosition()),
+            "focalPoint": list(camera.GetFocalPoint()),
+            "viewUp": list(camera.GetViewUp()),
+            "clippingRange": list(camera.GetClippingRange()),
+        }
+
+    def apply_camera_state(self, state: dict[str, Any] | None) -> None:
+        if not isinstance(state, dict):
+            return
+        camera = self.renderer.GetActiveCamera()
+        position = state.get("position")
+        focal_point = state.get("focalPoint")
+        view_up = state.get("viewUp")
+        clipping_range = state.get("clippingRange")
+        if isinstance(position, (list, tuple)) and len(position) == 3:
+            camera.SetPosition(*[float(value) for value in position])
+        if isinstance(focal_point, (list, tuple)) and len(focal_point) == 3:
+            camera.SetFocalPoint(*[float(value) for value in focal_point])
+        if isinstance(view_up, (list, tuple)) and len(view_up) == 3:
+            camera.SetViewUp(*[float(value) for value in view_up])
+        if isinstance(clipping_range, (list, tuple)) and len(clipping_range) == 2:
+            camera.SetClippingRange(float(clipping_range[0]), float(clipping_range[1]))
+        self.renderer.ResetCameraClippingRange()
+
     def _profile_for_mode(self, mode: str) -> QualityProfile:
         return INTERACTIVE_PROFILE if str(mode).strip().lower() == "interactive" else HIGH_QUALITY_PROFILE
 
@@ -1085,6 +1123,19 @@ class VTKDatacubeRenderer:
             return
         if self._active_mapper_name != "gpu":
             return
+        if bool(self._dataset_import_details.get("largeDataset")):
+            self._warmup_metrics["hiddenVolumePrewarmDeferred"] = False
+            self._warmup_metrics["hiddenVolumePrewarmMs"] = None
+            self._warmup_metrics["hiddenVolumePrewarmSkipped"] = True
+            self._warmup_metrics["hiddenVolumePrewarmSkipReason"] = "large-dataset-policy"
+            return
+        dataset_voxels = self._dataset_import_details.get("datasetVoxelCount")
+        if isinstance(dataset_voxels, (int, float)) and int(dataset_voxels) > load_config().prewarm_max_voxels:
+            self._warmup_metrics["hiddenVolumePrewarmDeferred"] = False
+            self._warmup_metrics["hiddenVolumePrewarmMs"] = None
+            self._warmup_metrics["hiddenVolumePrewarmSkipped"] = True
+            self._warmup_metrics["hiddenVolumePrewarmSkipReason"] = "large-dataset-policy"
+            return
         original_width = self.window_width
         original_height = self.window_height
         try:
@@ -1103,6 +1154,8 @@ class VTKDatacubeRenderer:
             self._warmup_metrics["hiddenVolumePrewarmMs"] = elapsed_ms
             self._warmup_metrics["hiddenVolumePrewarmWidth"] = target_width
             self._warmup_metrics["hiddenVolumePrewarmHeight"] = target_height
+            self._warmup_metrics["hiddenVolumePrewarmSkipped"] = False
+            self._warmup_metrics["hiddenVolumePrewarmSkipReason"] = None
             self._gpu_volume_prewarmed = True
             self._log.warning(
                 "Hidden volume GPU prewarm completed in %.2fms at %sx%s",
@@ -1148,6 +1201,18 @@ class VTKDatacubeRenderer:
                 "slicePaletteApplication": dict(self._slice_palette_application),
                 "stabilityMode": self.stability_mode,
                 "warmupMetrics": self.get_warmup_metrics(),
+                "largeDataset": bool(self._dataset_import_details.get("largeDataset")),
+                "datasetLoadMode": self._dataset_import_details.get("datasetLoadMode", "full"),
+                "datasetVoxelCount": self._dataset_import_details.get("datasetVoxelCount"),
+                "datasetBytesEstimate": self._dataset_import_details.get("datasetBytesEstimate"),
+                "previewShape": self._dataset_import_details.get("previewShape"),
+                "previewVoxelCount": self._dataset_import_details.get("previewVoxelCount"),
+                "previewDownsampleFactor": self._dataset_import_details.get("previewDownsampleFactor"),
+                "previewBytesEstimate": self._dataset_import_details.get("previewBytesEstimate"),
+                "memoryPolicyApplied": self._dataset_import_details.get("memoryPolicyApplied"),
+                "largeDatasetPolicyApplied": self._dataset_import_details.get("largeDatasetPolicyApplied"),
+                "hiddenVolumePrewarmSkipped": self._warmup_metrics.get("hiddenVolumePrewarmSkipped", False),
+                "hiddenVolumePrewarmSkipReason": self._warmup_metrics.get("hiddenVolumePrewarmSkipReason"),
                 # --- BEGIN PATCHED BLOCK ---
                 "volumeMaskExists": self.volume_mask is not None,
                 "volumeMaskClass": self.volume_mask.GetClassName() if self.volume_mask is not None else None,
@@ -1565,6 +1630,17 @@ class VTKDatacubeRenderer:
         if self._closed:
             return
         self._closed = True
+        try:
+            if hasattr(self.render_window, "Finalize"):
+                self.render_window.Finalize()
+        except Exception:
+            pass
+        self.volume_mask = None
+        self.image_data = None
+        self.isosurface_pipeline = None
+        self._dataset_scalar_summary = None
+        self._dataset_import_details = {}
+        gc.collect()
 
     def _handle_black_frame_detection(self, frame_rgb: np.ndarray) -> None:
         if self.visualization_mode != "volume" or self.volume_render_mode == "slice":

@@ -86,6 +86,11 @@ def set_last_fits_import_details(details: dict[str, Any] | None) -> None:
     _last_fits_import_details.set(dict(details) if details is not None else None)
 
 
+def peek_last_fits_import_details() -> dict[str, Any] | None:
+    details = _last_fits_import_details.get()
+    return dict(details) if details is not None else None
+
+
 def consume_last_fits_import_details() -> dict[str, Any] | None:
     details = _last_fits_import_details.get()
     _last_fits_import_details.set(None)
@@ -96,6 +101,10 @@ def consume_last_fits_import_metrics() -> FitsImportMetrics | None:
     metrics = _last_fits_import_metrics.get()
     _last_fits_import_metrics.set(None)
     return metrics
+
+
+def peek_last_fits_import_metrics() -> FitsImportMetrics | None:
+    return _last_fits_import_metrics.get()
 
 
 def current_memory_rss_mb() -> float | None:
