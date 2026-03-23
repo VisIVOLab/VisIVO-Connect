@@ -1040,6 +1040,8 @@ function syncDatasetLoadingFromState(message) {
 
   if (rendererDiagnostics.refineFailed) {
     state.datasets.statusHint = "Preview kept active after full-resolution refine failed.";
+  } else if (rendererDiagnostics.backgroundRefineDeferredReason === "egl-background-refine-unsafe") {
+    state.datasets.statusHint = "Preview loaded. Full-resolution refine deferred on this platform/backend.";
   }
 
   if (!state.datasets.loadingModalOpen && datasetLoading.active) {
@@ -2025,6 +2027,8 @@ function handleSocketMessage(raw) {
       }
       if (message.rendererDiagnostics?.refineFailed) {
         state.datasets.statusHint = "Preview kept active after full-resolution refine failed.";
+      } else if (message.rendererDiagnostics?.backgroundRefineDeferredReason === "egl-background-refine-unsafe") {
+        state.datasets.statusHint = "Preview loaded. Full-resolution refine deferred on this platform/backend.";
       } else if (message.rendererDiagnostics?.refinePending || message.rendererDiagnostics?.refineRunning) {
         state.datasets.statusHint = "Preview loaded, refining full resolution...";
       } else if (message.rendererDiagnostics?.backgroundRefineDeferred) {

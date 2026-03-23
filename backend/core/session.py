@@ -216,6 +216,10 @@ class RemoteRenderSession:
             enabled = False
             deferred = True
             reason = "cocoa-main-thread-only"
+        if enabled and renderer_backend == "vtkEGLRenderWindow":
+            enabled = False
+            deferred = True
+            reason = "egl-background-refine-unsafe"
 
         return {
             "backgroundRefineEnabled": enabled,
