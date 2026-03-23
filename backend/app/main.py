@@ -881,6 +881,7 @@ async def _attach_peer_connection(session: RemoteRenderSession, ws: WebSocket, r
             gather_wait_ms,
         )
     offer_sdp = _apply_video_bandwidth_hints(pc.localDescription.sdp, session.target_bitrate_mbps)
+    session.negotiated_bitrate_mbps = float(session.target_bitrate_mbps)
     log.warning(
         "Offer video bandwidth hints session=%s bitrateMbps=%.2f",
         session.session_id,
@@ -1131,6 +1132,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
     if session is None:
         return _error_response("session-not-found", "session not found", phase="metrics", status_code=404, retryable=True)
     pipeline_metrics = dict(session.latest_pipeline_metrics)
+    effective_bitrate_mbps, effective_bitrate_status = session._effective_bitrate_state()
     return JSONResponse(
         {
             "sessionId": session.session_id,
@@ -1185,17 +1187,28 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "interactiveFps": session.runtime_metrics.interactive_fps,
                 "memoryRssMb": session.runtime_metrics.memory_rss_mb,
                 "adaptiveScalingEnabled": bool(session.adaptive_scaling_enabled),
+                "adaptiveScalingActive": bool(session._adaptive_scaling_active()),
+                "adaptiveScalingFrozenInHQ": bool(session._adaptive_scaling_frozen_in_hq()),
                 "adaptiveViewportActiveInInteractiveOnly": bool(session.adaptive_viewport_active_in_interactive_only),
                 "currentViewportScale": float(session.current_viewport_scale),
+                "effectiveViewportScale": float(session._effective_viewport_scale()),
                 "smoothedPipelineMs": session.smoothed_pipeline_ms,
                 "adaptiveBitrateEnabled": bool(session.adaptive_bitrate_enabled),
                 "currentAdaptiveBitrateMbps": float(session.current_adaptive_bitrate_mbps),
+                "targetBitrateMbps": float(session.target_bitrate_mbps),
+                "effectiveBitrateMbps": effective_bitrate_mbps,
+                "effectiveBitrateStatus": effective_bitrate_status,
             },
             "pipelineMetrics": {
                 "activeMapperClass": pipeline_metrics.get("activeMapperClass"),
                 "requestedMapperClass": pipeline_metrics.get("requestedMapperClass"),
                 "smartMapperRequestedMode": pipeline_metrics.get("smartMapperRequestedMode"),
                 "smartMapperLastUsedMode": pipeline_metrics.get("smartMapperLastUsedMode"),
+                "renderWidth": pipeline_metrics.get("frameWidth"),
+                "renderHeight": pipeline_metrics.get("frameHeight"),
+                "targetViewportWidth": int(session.viewport.width),
+                "targetViewportHeight": int(session.viewport.height),
+                "effectiveViewportScale": float(session._effective_viewport_scale()),
                 "renderTimeMs": _sample_mean(session.stats.render_time_ms),
                 "frameCaptureReadbackTimeMs": _sample_mean(session.stats.frame_capture_time_ms),
                 "frameConversionTimeMs": _sample_mean(session.stats.frame_conversion_time_ms),
@@ -1227,11 +1240,21 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "lastRendererSwapError": session.loading_state.get("lastRendererSwapError"),
                 "eglContextErrorDetected": bool(session.loading_state.get("eglContextErrorDetected")),
                 "adaptiveScalingEnabled": bool(session.adaptive_scaling_enabled),
+                "adaptiveScalingActive": bool(session._adaptive_scaling_active()),
+                "adaptiveScalingFrozenInHQ": bool(session._adaptive_scaling_frozen_in_hq()),
                 "adaptiveViewportActiveInInteractiveOnly": bool(session.adaptive_viewport_active_in_interactive_only),
                 "currentViewportScale": float(session.current_viewport_scale),
+                "effectiveViewportScale": float(session._effective_viewport_scale()),
                 "smoothedPipelineMs": session.smoothed_pipeline_ms,
                 "adaptiveBitrateEnabled": bool(session.adaptive_bitrate_enabled),
                 "currentAdaptiveBitrateMbps": float(session.current_adaptive_bitrate_mbps),
+                "targetBitrateMbps": float(session.target_bitrate_mbps),
+                "effectiveBitrateMbps": effective_bitrate_mbps,
+                "effectiveBitrateStatus": effective_bitrate_status,
+                "renderWidth": pipeline_metrics.get("frameWidth"),
+                "renderHeight": pipeline_metrics.get("frameHeight"),
+                "targetViewportWidth": int(session.viewport.width),
+                "targetViewportHeight": int(session.viewport.height),
             },
             "datasetLoading": dict(session.loading_state),
             "sliceReference": session.renderer.get_slice_reference(),

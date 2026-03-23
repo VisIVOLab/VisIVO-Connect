@@ -131,8 +131,11 @@ const elements = {
   metricsHighQualityRenderTime: document.getElementById("metricsHighQualityRenderTime"),
   metricsMemoryRss: document.getElementById("metricsMemoryRss"),
   metricsAdaptiveScalingEnabled: document.getElementById("metricsAdaptiveScalingEnabled"),
+  metricsAdaptiveScalingActive: document.getElementById("metricsAdaptiveScalingActive"),
+  metricsAdaptiveScalingFrozenInHq: document.getElementById("metricsAdaptiveScalingFrozenInHq"),
   metricsAdaptiveViewportInteractiveOnly: document.getElementById("metricsAdaptiveViewportInteractiveOnly"),
   metricsCurrentViewportScale: document.getElementById("metricsCurrentViewportScale"),
+  metricsEffectiveViewportScale: document.getElementById("metricsEffectiveViewportScale"),
   metricsSmoothedPipelineMs: document.getElementById("metricsSmoothedPipelineMs"),
   metricsAdaptiveBitrateEnabled: document.getElementById("metricsAdaptiveBitrateEnabled"),
   metricsCurrentAdaptiveBitrateMbps: document.getElementById("metricsCurrentAdaptiveBitrateMbps"),
@@ -187,7 +190,9 @@ const elements = {
   metricsPipelinePacingTime: document.getElementById("metricsPipelinePacingTime"),
   metricsPipelineTotalTime: document.getElementById("metricsPipelineTotalTime"),
   metricsRequestedBitrate: document.getElementById("metricsRequestedBitrate"),
+  metricsEffectiveBitrate: document.getElementById("metricsEffectiveBitrate"),
   metricsStreamFrameSize: document.getElementById("metricsStreamFrameSize"),
+  metricsTargetViewportSize: document.getElementById("metricsTargetViewportSize"),
   metricsDisplayScale: document.getElementById("metricsDisplayScale"),
   metricsIceRelayOnly: document.getElementById("metricsIceRelayOnly"),
   metricsIceGatheringTime: document.getElementById("metricsIceGatheringTime"),
@@ -3925,6 +3930,14 @@ function computeDisplayScaleSummary() {
   return `${scale.toFixed(2)}x (${Math.round(rect.width)}x${Math.round(rect.height)} / ${frameWidth}x${frameHeight})`;
 }
 
+function computeDisplayResolutionSummary() {
+  const rect = elements.stageFrame.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) {
+    return "";
+  }
+  return `${Math.round(rect.width)} x ${Math.round(rect.height)}`;
+}
+
 function qualityProfileFallback(mode) {
   return {
     renderScale: effectiveRenderScaleForMode(mode),
@@ -4122,6 +4135,14 @@ function renderMetrics(payload) {
     formatBoolean(adaptiveScaling.adaptiveScalingEnabled ?? runtime.adaptiveScalingEnabled ?? renderer.adaptiveScalingEnabled)
   );
   setText(
+    elements.metricsAdaptiveScalingActive,
+    formatBoolean(adaptiveScaling.adaptiveScalingActive ?? runtime.adaptiveScalingActive ?? renderer.adaptiveScalingActive)
+  );
+  setText(
+    elements.metricsAdaptiveScalingFrozenInHq,
+    formatBoolean(adaptiveScaling.adaptiveScalingFrozenInHQ ?? runtime.adaptiveScalingFrozenInHQ ?? renderer.adaptiveScalingFrozenInHQ)
+  );
+  setText(
     elements.metricsAdaptiveViewportInteractiveOnly,
     formatBoolean(
       adaptiveScaling.adaptiveViewportActiveInInteractiveOnly
@@ -4132,6 +4153,10 @@ function renderMetrics(payload) {
   setText(
     elements.metricsCurrentViewportScale,
     formatScale(adaptiveScaling.currentViewportScale ?? runtime.currentViewportScale ?? renderer.currentViewportScale ?? 1.0)
+  );
+  setText(
+    elements.metricsEffectiveViewportScale,
+    formatScale(adaptiveScaling.effectiveViewportScale ?? runtime.effectiveViewportScale ?? renderer.effectiveViewportScale ?? 1.0)
   );
   setText(
     elements.metricsSmoothedPipelineMs,
@@ -4229,16 +4254,35 @@ function renderMetrics(payload) {
   setText(elements.metricsRequestedMapperClass, pipeline.requestedMapperClass || renderer.requestedMapperClass || "-");
   setText(elements.metricsSmartMapperRequestedMode, pipeline.smartMapperRequestedMode || renderer.smartMapperRequestedMode || "-");
   setText(elements.metricsSmartMapperLastUsedMode, pipeline.smartMapperLastUsedMode || renderer.smartMapperLastUsedMode || "-");
-  setText(elements.metricsRequestedBitrate, formatBitrate(effectiveBitrateForMode(state.renderMode)));
+  setText(
+    elements.metricsRequestedBitrate,
+    formatBitrate(adaptiveScaling.targetBitrateMbps ?? runtime.targetBitrateMbps ?? renderer.targetBitrateMbps ?? effectiveBitrateForMode(state.renderMode))
+  );
+  setText(
+    elements.metricsEffectiveBitrate,
+    adaptiveScaling.effectiveBitrateStatus
+      ? (
+        Number.isFinite(adaptiveScaling.effectiveBitrateMbps)
+          ? `${formatBitrate(adaptiveScaling.effectiveBitrateMbps)} (${adaptiveScaling.effectiveBitrateStatus})`
+          : adaptiveScaling.effectiveBitrateStatus
+      )
+      : formatBitrate(adaptiveScaling.effectiveBitrateMbps ?? runtime.effectiveBitrateMbps ?? renderer.effectiveBitrateMbps)
+  );
   setText(
     elements.metricsStreamFrameSize,
-    Number.isFinite(pipeline.frameWidth) && Number.isFinite(pipeline.frameHeight)
-      ? `${formatInteger(pipeline.frameWidth)}x${formatInteger(pipeline.frameHeight)}`
+    Number.isFinite(pipeline.renderWidth ?? pipeline.frameWidth) && Number.isFinite(pipeline.renderHeight ?? pipeline.frameHeight)
+      ? `${formatInteger(pipeline.renderWidth ?? pipeline.frameWidth)} x ${formatInteger(pipeline.renderHeight ?? pipeline.frameHeight)}`
       : state.display.incomingFrameWidth > 0 && state.display.incomingFrameHeight > 0
-        ? `${formatInteger(state.display.incomingFrameWidth)}x${formatInteger(state.display.incomingFrameHeight)}`
+        ? `${formatInteger(state.display.incomingFrameWidth)} x ${formatInteger(state.display.incomingFrameHeight)}`
         : "-"
   );
-  setText(elements.metricsDisplayScale, computeDisplayScaleSummary() || "-");
+  setText(
+    elements.metricsTargetViewportSize,
+    Number.isFinite(pipeline.targetViewportWidth) && Number.isFinite(pipeline.targetViewportHeight)
+      ? `${formatInteger(pipeline.targetViewportWidth)} x ${formatInteger(pipeline.targetViewportHeight)}`
+      : "-"
+  );
+  setText(elements.metricsDisplayScale, computeDisplayResolutionSummary() || "-");
   setText(elements.metricsPipelineRenderTime, formatMs(pipeline.renderTimeMs));
   setText(elements.metricsPipelineCaptureTime, formatMs(pipeline.frameCaptureReadbackTimeMs));
   setText(elements.metricsPipelineConversionTime, formatMs(pipeline.frameConversionTimeMs));

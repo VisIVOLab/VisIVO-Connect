@@ -91,6 +91,7 @@ class RemoteRenderSession:
         self.target_stream_fps = float(config.default_target_fps)
         self.target_bitrate_mbps = float(config.default_bitrate_mbps)
         self.requested_bitrate_mbps = float(config.default_bitrate_mbps)
+        self.negotiated_bitrate_mbps: float | None = None
         self.requested_render_scale = 1.0
         self.adaptive_scaling_enabled = True
         self.adaptive_viewport_active_in_interactive_only = True
@@ -292,6 +293,26 @@ class RemoteRenderSession:
         if adaptive_active:
             adaptive = min(max(float(self.current_viewport_scale), 0.5), 1.0)
         return min(max(requested * adaptive, 0.4), 2.0)
+
+    def _adaptive_scaling_active(self) -> bool:
+        return bool(
+            self.adaptive_scaling_enabled
+            and (not self.adaptive_viewport_active_in_interactive_only or self.mode == "interactive")
+        )
+
+    def _adaptive_scaling_frozen_in_hq(self) -> bool:
+        return bool(
+            self.adaptive_scaling_enabled
+            and self.adaptive_viewport_active_in_interactive_only
+            and self.mode == "high-quality"
+        )
+
+    def _effective_bitrate_state(self) -> tuple[float | None, str | None]:
+        if self.negotiated_bitrate_mbps is None:
+            return None, "pending renegotiation"
+        if abs(float(self.negotiated_bitrate_mbps) - float(self.target_bitrate_mbps)) > 1e-6:
+            return float(self.negotiated_bitrate_mbps), "pending renegotiation"
+        return float(self.negotiated_bitrate_mbps), None
 
     def _apply_renderer_scale_locked(self, renderer: Any) -> None:
         renderer.set_user_render_scale(self._effective_viewport_scale())
@@ -495,6 +516,7 @@ class RemoteRenderSession:
             bounded = min(max(self.requested_bitrate_mbps, self._adaptive_bitrate_min_mbps), self._adaptive_bitrate_max_mbps)
             self.current_adaptive_bitrate_mbps = bounded
             self.target_bitrate_mbps = bounded
+            self.negotiated_bitrate_mbps = None
             self.last_bitrate_update_ts = 0.0
             self._adaptive_bitrate_started = False
 
@@ -540,6 +562,7 @@ class RemoteRenderSession:
             self.request_render()
 
     def state_payload(self, text: str | None = None) -> dict[str, Any]:
+        effective_bitrate_mbps, effective_bitrate_status = self._effective_bitrate_state()
         slot = self._checkout_active_renderer_slot()
         try:
             with slot.render_lock:
@@ -582,11 +605,17 @@ class RemoteRenderSession:
                 "lastRendererSwapError": self.loading_state.get("lastRendererSwapError"),
                 "eglContextErrorDetected": bool(self.loading_state.get("eglContextErrorDetected")),
                 "adaptiveScalingEnabled": bool(self.adaptive_scaling_enabled),
+                "adaptiveScalingActive": bool(self._adaptive_scaling_active()),
+                "adaptiveScalingFrozenInHQ": bool(self._adaptive_scaling_frozen_in_hq()),
                 "adaptiveViewportActiveInInteractiveOnly": bool(self.adaptive_viewport_active_in_interactive_only),
                 "currentViewportScale": float(self.current_viewport_scale),
+                "effectiveViewportScale": float(self._effective_viewport_scale()),
                 "smoothedPipelineMs": self.smoothed_pipeline_ms,
                 "adaptiveBitrateEnabled": bool(self.adaptive_bitrate_enabled),
                 "currentAdaptiveBitrateMbps": float(self.current_adaptive_bitrate_mbps),
+                "targetBitrateMbps": float(self.target_bitrate_mbps),
+                "effectiveBitrateMbps": effective_bitrate_mbps,
+                "effectiveBitrateStatus": effective_bitrate_status,
             },
             "datasetLoading": dict(self.loading_state),
             "sliceReference": slice_reference,
@@ -637,6 +666,7 @@ class RemoteRenderSession:
                 self._adaptive_bitrate_max_mbps,
             )
             self.target_bitrate_mbps = self.current_adaptive_bitrate_mbps
+            self.negotiated_bitrate_mbps = None
             self.last_bitrate_update_ts = 0.0
             self._adaptive_bitrate_started = False
             self._frame_serial = 0
@@ -1062,15 +1092,24 @@ class RemoteRenderSession:
                 self._release_renderer_slot(slot)
 
     def adaptive_scaling_state(self) -> dict[str, Any]:
+        effective_bitrate_mbps, effective_bitrate_status = self._effective_bitrate_state()
         return {
             "adaptiveScalingEnabled": bool(self.adaptive_scaling_enabled),
+            "adaptiveScalingActive": bool(self._adaptive_scaling_active()),
+            "adaptiveScalingFrozenInHQ": bool(self._adaptive_scaling_frozen_in_hq()),
             "adaptiveViewportActiveInInteractiveOnly": bool(self.adaptive_viewport_active_in_interactive_only),
             "currentViewportScale": float(self.current_viewport_scale),
+            "effectiveViewportScale": float(self._effective_viewport_scale()),
             "smoothedPipelineMs": self.smoothed_pipeline_ms,
             "requestedRenderScale": float(self.requested_render_scale),
             "adaptiveBitrateEnabled": bool(self.adaptive_bitrate_enabled),
             "currentAdaptiveBitrateMbps": float(self.current_adaptive_bitrate_mbps),
             "requestedBitrateMbps": float(self.requested_bitrate_mbps),
+            "targetBitrateMbps": float(self.target_bitrate_mbps),
+            "effectiveBitrateMbps": effective_bitrate_mbps,
+            "effectiveBitrateStatus": effective_bitrate_status,
+            "targetViewportWidth": int(self.viewport.width),
+            "targetViewportHeight": int(self.viewport.height),
         }
 
 
