@@ -131,8 +131,11 @@ const elements = {
   metricsHighQualityRenderTime: document.getElementById("metricsHighQualityRenderTime"),
   metricsMemoryRss: document.getElementById("metricsMemoryRss"),
   metricsAdaptiveScalingEnabled: document.getElementById("metricsAdaptiveScalingEnabled"),
+  metricsAdaptiveViewportInteractiveOnly: document.getElementById("metricsAdaptiveViewportInteractiveOnly"),
   metricsCurrentViewportScale: document.getElementById("metricsCurrentViewportScale"),
   metricsSmoothedPipelineMs: document.getElementById("metricsSmoothedPipelineMs"),
+  metricsAdaptiveBitrateEnabled: document.getElementById("metricsAdaptiveBitrateEnabled"),
+  metricsCurrentAdaptiveBitrateMbps: document.getElementById("metricsCurrentAdaptiveBitrateMbps"),
   metricsRenderPath: document.getElementById("metricsRenderPath"),
   metricsCapabilityProfile: document.getElementById("metricsCapabilityProfile"),
   metricsRenderBackend: document.getElementById("metricsRenderBackend"),
@@ -4119,12 +4122,32 @@ function renderMetrics(payload) {
     formatBoolean(adaptiveScaling.adaptiveScalingEnabled ?? runtime.adaptiveScalingEnabled ?? renderer.adaptiveScalingEnabled)
   );
   setText(
+    elements.metricsAdaptiveViewportInteractiveOnly,
+    formatBoolean(
+      adaptiveScaling.adaptiveViewportActiveInInteractiveOnly
+      ?? runtime.adaptiveViewportActiveInInteractiveOnly
+      ?? renderer.adaptiveViewportActiveInInteractiveOnly
+    )
+  );
+  setText(
     elements.metricsCurrentViewportScale,
     formatScale(adaptiveScaling.currentViewportScale ?? runtime.currentViewportScale ?? renderer.currentViewportScale ?? 1.0)
   );
   setText(
     elements.metricsSmoothedPipelineMs,
     formatMs(adaptiveScaling.smoothedPipelineMs ?? runtime.smoothedPipelineMs ?? renderer.smoothedPipelineMs)
+  );
+  setText(
+    elements.metricsAdaptiveBitrateEnabled,
+    formatBoolean(adaptiveScaling.adaptiveBitrateEnabled ?? runtime.adaptiveBitrateEnabled ?? renderer.adaptiveBitrateEnabled)
+  );
+  setText(
+    elements.metricsCurrentAdaptiveBitrateMbps,
+    formatBitrate(
+      adaptiveScaling.currentAdaptiveBitrateMbps
+      ?? runtime.currentAdaptiveBitrateMbps
+      ?? renderer.currentAdaptiveBitrateMbps
+    )
   );
   setText(elements.metricsRenderPath, renderer.selectedRenderPath || "-");
   setText(elements.metricsCapabilityProfile, renderer.capabilityProfile || "-");
