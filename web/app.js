@@ -3720,6 +3720,7 @@ function buildMetricsUrl() {
 function renderMetrics(payload) {
   const runtime = payload?.runtimeMetrics || {};
   const importMetrics = payload?.importMetrics || {};
+  const importDetails = payload?.importDetails || {};
   const renderer = payload?.rendererDiagnostics || {};
   const warmup = renderer?.warmupMetrics || {};
   const pipeline = payload?.pipelineMetrics || {};
@@ -3728,6 +3729,21 @@ function renderMetrics(payload) {
   const datasetName = payload?.datasetName || payload?.datasetPath || "-";
   const interactiveProfile = effectiveQualityProfiles.interactive || qualityProfileFallback("interactive");
   const highQualityProfile = effectiveQualityProfiles.highQuality || qualityProfileFallback("high-quality");
+  const metricValueByLabel = new Map(
+    Array.from(document.querySelectorAll('.tab-panel[data-tab-panel="metrics"] .metric-row')).map((row) => [
+      row.querySelector(".metric-label")?.textContent?.trim() || "",
+      row.querySelector(".metric-value"),
+    ])
+  );
+  const setMetricByLabel = (label, value) => {
+    const target = metricValueByLabel.get(label);
+    if (target) {
+      setText(target, value);
+    }
+  };
+  const formatScientific = (value) => (Number.isFinite(value) ? Number(value).toExponential(3) : "-");
+  const formatFixed = (value, digits = 3) => (Number.isFinite(value) ? Number(value).toFixed(digits) : "-");
+  const formatPercent = (value, digits = 2) => (Number.isFinite(value) ? `${Number(value).toFixed(digits)}%` : "-");
 
   setText(elements.metricsSessionId, payload?.sessionId || state.sessionId || "-");
   setText(elements.metricsVisualizationMode, payload?.visualizationMode || "-");
@@ -3835,6 +3851,21 @@ function renderMetrics(payload) {
   setText(elements.metricsVtkBuild, formatMs(importMetrics.vtkBuildMs));
   setText(elements.metricsFitsTotal, formatMs(importMetrics.fitsTotalMs));
   setText(elements.metricsFitsCacheHit, formatBoolean(importMetrics.cacheHit));
+
+  setMetricByLabel("Validity mask source", importDetails.validityMaskSource || "-");
+  setMetricByLabel("Validity mask present", formatBoolean(importDetails.validityMaskPresent));
+  setMetricByLabel("Validity mask packed in cache", formatBoolean(importDetails.validityMaskPackedInCache));
+  setMetricByLabel("Validity mask all valid", formatBoolean(importDetails.validityMaskAllValid));
+  setMetricByLabel("Invalid voxel count", formatInteger(importDetails.invalidVoxelCount));
+  setMetricByLabel("NaN voxel count", formatInteger(importDetails.nanVoxelCount));
+
+  setMetricByLabel("Opacity mode", renderer.opacityMode || "-");
+  setMetricByLabel("Finite min", formatScientific(renderer.finiteMin));
+  setMetricByLabel("Finite max", formatScientific(renderer.finiteMax));
+  setMetricByLabel("Positive min", formatScientific(renderer.positiveMin));
+  setMetricByLabel("RMS", formatScientific(renderer.rms));
+  setMetricByLabel("Dynamic range log10", formatFixed(renderer.dynamicRangeLog10, 3));
+  setMetricByLabel("Volume mask coverage", formatPercent(renderer.volumeMaskCoveragePercent, 2));
 
 }
 
