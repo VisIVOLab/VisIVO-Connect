@@ -961,11 +961,15 @@ function updateDatasetLoadingPhase(phase, label, importMetrics, datasetLoading, 
   };
   const doneKeys = phaseToStepKeys[phase] || [];
   const refinePending = Boolean(datasetLoading?.refinePending || rendererDiagnostics?.refinePending);
+  const refineDeferred = Boolean(datasetLoading?.backgroundRefineDeferred || rendererDiagnostics?.backgroundRefineDeferred);
   state.datasets.loadingComplete = phase === "complete";
   state.datasets.loadingStatus = label || state.datasets.loadingStatus || "Loading dataset";
   if (phase === "complete" && refinePending) {
     state.datasets.loadingStatus = "Preview loaded, refining full resolution...";
     state.datasets.statusHint = "Preview loaded, refining full resolution...";
+  } else if (phase === "complete" && refineDeferred) {
+    state.datasets.loadingStatus = "Preview loaded. Full-resolution refine deferred on this platform.";
+    state.datasets.statusHint = "Preview loaded. Full-resolution refine deferred on this platform.";
   } else if (phase === "refining-full" || refinePending) {
     state.datasets.statusHint = "Preview loaded, refining full resolution...";
   } else if (phase === "complete") {
@@ -975,6 +979,9 @@ function updateDatasetLoadingPhase(phase, label, importMetrics, datasetLoading, 
     if (phase === "complete") {
       if (step.key === "refining-full" && refinePending) {
         return { ...step, state: "active" };
+      }
+      if (step.key === "refining-full" && refineDeferred) {
+        return { ...step, state: "pending", detail: "deferred" };
       }
       return { ...step, state: "done" };
     }
@@ -2014,6 +2021,8 @@ function handleSocketMessage(raw) {
       }
       if (message.rendererDiagnostics?.refinePending) {
         state.datasets.statusHint = "Preview loaded, refining full resolution...";
+      } else if (message.rendererDiagnostics?.backgroundRefineDeferred) {
+        state.datasets.statusHint = "Preview loaded. Full-resolution refine deferred on this platform.";
       } else if (!message.datasetLoading?.active) {
         state.datasets.statusHint = "";
       }
@@ -3899,6 +3908,9 @@ function renderMetrics(payload) {
   setMetricByLabel("Large dataset", formatBoolean(renderer.largeDataset));
   setMetricByLabel("Dataset load mode", renderer.datasetLoadMode || "-");
   setMetricByLabel("Refine pending", formatBoolean(renderer.refinePending));
+  setMetricByLabel("Background refine enabled", formatBoolean(renderer.backgroundRefineEnabled));
+  setMetricByLabel("Background refine deferred", formatBoolean(renderer.backgroundRefineDeferred));
+  setMetricByLabel("Background refine deferred reason", renderer.backgroundRefineDeferredReason || "-");
   setMetricByLabel("Dataset voxels", formatInteger(renderer.datasetVoxelCount));
   setMetricByLabel("Dataset bytes estimate", formatBytesEstimate(renderer.datasetBytesEstimate));
   setMetricByLabel(

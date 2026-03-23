@@ -1185,6 +1185,9 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 **session.renderer.get_renderer_diagnostics(),
                 "refinePending": bool(session.loading_state.get("refinePending")),
                 "datasetLoadingActive": bool(session.loading_state.get("active")),
+                "backgroundRefineEnabled": bool(session.loading_state.get("backgroundRefineEnabled")),
+                "backgroundRefineDeferred": bool(session.loading_state.get("backgroundRefineDeferred")),
+                "backgroundRefineDeferredReason": session.loading_state.get("backgroundRefineDeferredReason"),
             },
             "datasetLoading": dict(session.loading_state),
         }
@@ -1431,7 +1434,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                             session=session,
                         )
                     session.prime_first_frame()
-                    refine_pending = session._should_refine_full_resolution()
+                    refine_pending = bool(session.loading_state.get("refinePending"))
                     if loading_updates_enabled:
                         await _send_dataset_loading(
                             ws,

@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 import gc
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -69,6 +70,9 @@ class RemoteRenderSession:
             "largeDataset": self._is_large_dataset(),
             "refinePending": self._should_refine_full_resolution(),
         }
+        self.loading_state.update(self._background_refine_policy())
+        if not self.loading_state.get("backgroundRefineEnabled"):
+            self.loading_state["refinePending"] = False
 
         self._latest_frame: FramePacket | None = None
         self.latest_pipeline_metrics: dict[str, Any] = {}
@@ -108,7 +112,29 @@ class RemoteRenderSession:
     def _should_refine_full_resolution(self) -> bool:
         return self._dataset_load_mode() == "preview" and self._is_large_dataset()
 
+    def _background_refine_policy(self) -> dict[str, Any]:
+        renderer_backend = None
+        try:
+            renderer_backend = self.renderer.get_renderer_diagnostics().get("renderWindowBackend")
+        except Exception:
+            renderer_backend = None
+
+        enabled = self._should_refine_full_resolution()
+        deferred = False
+        reason: str | None = None
+        if enabled and sys.platform == "darwin" and renderer_backend in {"vtkRenderWindow", "vtkCocoaRenderWindow"}:
+            enabled = False
+            deferred = True
+            reason = "cocoa-main-thread-only"
+
+        return {
+            "backgroundRefineEnabled": enabled,
+            "backgroundRefineDeferred": deferred,
+            "backgroundRefineDeferredReason": reason,
+        }
+
     def set_loading_state(self, *, active: bool, phase: str | None, label: str | None) -> None:
+        background_refine = self._background_refine_policy()
         self.loading_state.update(
             {
                 "active": bool(active),
@@ -117,7 +143,8 @@ class RemoteRenderSession:
                 "datasetPath": getattr(self.renderer, "dataset_path", None),
                 "datasetLoadMode": self._dataset_load_mode(),
                 "largeDataset": self._is_large_dataset(),
-                "refinePending": self._should_refine_full_resolution(),
+                "refinePending": self._should_refine_full_resolution() and background_refine["backgroundRefineEnabled"],
+                **background_refine,
             }
         )
 
@@ -344,6 +371,9 @@ class RemoteRenderSession:
                 **self.renderer.get_renderer_diagnostics(),
                 "refinePending": bool(self.loading_state.get("refinePending")),
                 "datasetLoadingActive": bool(self.loading_state.get("active")),
+                "backgroundRefineEnabled": bool(self.loading_state.get("backgroundRefineEnabled")),
+                "backgroundRefineDeferred": bool(self.loading_state.get("backgroundRefineDeferred")),
+                "backgroundRefineDeferredReason": self.loading_state.get("backgroundRefineDeferredReason"),
             },
             "datasetLoading": dict(self.loading_state),
         }
@@ -398,6 +428,9 @@ class RemoteRenderSession:
                 "largeDataset": self._is_large_dataset(),
                 "refinePending": self._should_refine_full_resolution(),
             }
+            self.loading_state.update(self._background_refine_policy())
+            if not self.loading_state.get("backgroundRefineEnabled"):
+                self.loading_state["refinePending"] = False
             close_renderer = getattr(previous_renderer, "close", None)
             if callable(close_renderer):
                 close_renderer()
@@ -406,6 +439,11 @@ class RemoteRenderSession:
 
     def can_schedule_full_resolution_refine(self) -> bool:
         if self._closed or not self._should_refine_full_resolution():
+            return False
+        policy = self._background_refine_policy()
+        self.loading_state.update(policy)
+        if not policy["backgroundRefineEnabled"]:
+            self.loading_state["refinePending"] = False
             return False
         if self._refine_task is not None and not self._refine_task.done():
             return False
