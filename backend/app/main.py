@@ -15,6 +15,7 @@ from aiortc.sdp import candidate_from_sdp
 import av
 import numpy as np
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from uvicorn.protocols.utils import ClientDisconnected
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -132,6 +133,20 @@ def _error_response(
     )
 
 
+
+# Helper to safely send JSON over websocket, resilient to disconnects
+async def _safe_ws_send_json(ws: WebSocket, payload: dict[str, Any]) -> bool:
+    try:
+        await ws.send_json(payload)
+        return True
+    except (WebSocketDisconnect, ClientDisconnected):
+        return False
+    except RuntimeError as exc:
+        if "close message has been sent" in str(exc):
+            return False
+        raise
+
+
 async def _send_ws_error(
     ws: WebSocket,
     code: str,
@@ -141,8 +156,9 @@ async def _send_ws_error(
     retryable: bool = False,
     session_id: str | None = None,
     details: dict[str, Any] | None = None,
-) -> None:
-    await ws.send_json(
+) -> bool:
+    return await _safe_ws_send_json(
+        ws,
         _error_payload(
             code,
             message,
@@ -150,7 +166,7 @@ async def _send_ws_error(
             retryable=retryable,
             session_id=session_id,
             details=details,
-        )
+        ),
     )
 
 
@@ -162,7 +178,7 @@ async def _send_dataset_loading(
     dataset_path: str | None,
     session: RemoteRenderSession | None = None,
     done: bool = False,
-) -> None:
+) -> bool:
     dataset_name = Path(dataset_path.split("#", 1)[0]).name if isinstance(dataset_path, str) and dataset_path else None
     relative_path = dataset_relative_path(dataset_path, allowed_root=config.dataset_root)
     payload: dict[str, Any] = {
@@ -187,7 +203,7 @@ async def _send_dataset_loading(
             if session.import_details is not None:
                 payload["importDetails"] = dict(session.import_details)
         payload["warmupMetrics"] = session.renderer.get_warmup_metrics()
-    await ws.send_json(payload)
+    return await _safe_ws_send_json(ws, payload)
 
 
 def _startup_snapshot() -> dict[str, Any]:
@@ -1428,6 +1444,20 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     retryable=False,
                     session_id=session.session_id if session else None,
                 )
+            except (WebSocketDisconnect, ClientDisconnected):
+                return
+            except RuntimeError as exc:
+                if "close message has been sent" in str(exc):
+                    return
+                log.exception("Unhandled websocket runtime error phase=%s session=%s", phase, session.session_id if session else None)
+                await _send_ws_error(
+                    ws,
+                    "internal-error",
+                    "Internal server error",
+                    phase=phase,
+                    retryable=False,
+                    session_id=session.session_id if session else None,
+                )
             except ClientFacingError as exc:
                 log.warning(
                     "WS client error phase=%s code=%s session=%s details=%s",
@@ -1436,7 +1466,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     session.session_id if session else None,
                     exc.details or None,
                 )
-                await _send_ws_error(
+                delivered = await _send_ws_error(
                     ws,
                     exc.code,
                     exc.message,
@@ -1446,11 +1476,16 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     details=exc.details,
                 )
                 if exc.close_code is not None:
-                    await ws.close(code=exc.close_code)
+                    try:
+                        await ws.close(code=exc.close_code)
+                    except Exception:
+                        pass
+                    return
+                if not delivered:
                     return
             except Exception:
                 log.exception("Unhandled websocket error phase=%s session=%s", phase, session.session_id if session else None)
-                await _send_ws_error(
+                delivered = await _send_ws_error(
                     ws,
                     "internal-error",
                     "Internal server error",
@@ -1458,9 +1493,16 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     retryable=False,
                     session_id=session.session_id if session else None,
                 )
+                if not delivered:
+                    return
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, ClientDisconnected):
         pass
+    except RuntimeError as exc:
+        if "close message has been sent" in str(exc):
+            pass
+        else:
+            raise
     finally:
         if ws_stream_task is not None:
             ws_stream_task.cancel()
