@@ -16,6 +16,7 @@ from backend.core.config import dataset_relative_path, load_config
 from backend.core.observability import (
     FitsImportMetrics,
     SessionRuntimeMetrics,
+    consume_last_fits_import_details,
     consume_last_fits_import_metrics,
 )
 
@@ -50,6 +51,7 @@ class RemoteRenderSession:
         self.runtime_metrics = SessionRuntimeMetrics()
         self.runtime_metrics.refresh_memory_rss()
         self.import_metrics: FitsImportMetrics | None = consume_last_fits_import_metrics()
+        self.import_details: dict[str, Any] | None = consume_last_fits_import_details()
 
         self._latest_frame: FramePacket | None = None
         self.latest_pipeline_metrics: dict[str, Any] = {}
@@ -314,6 +316,7 @@ class RemoteRenderSession:
                 volume_params=self.renderer.get_volume_params(),
             )
             self.import_metrics = consume_last_fits_import_metrics()
+            self.import_details = consume_last_fits_import_details()
             self.runtime_metrics = SessionRuntimeMetrics()
             self.runtime_metrics.refresh_memory_rss()
             self.stats = RenderStats()

@@ -26,6 +26,7 @@ from backend.rendering.vlva_colormaps import (
 
 _SCALAR_SUMMARY_CACHE_MAX_ENTRIES = 4
 _scalar_summary_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+_VALIDITY_MASK_ARRAY_NAME = "_visivo_valid_mask"
 
 
 class VTKDatacubeRenderer:
@@ -132,6 +133,7 @@ class VTKDatacubeRenderer:
         self.volume_render_mode = "composite"
         self.volume_palette = DEFAULT_COLOR_MAP
         self.volume_scale_mode = "linear"
+        self.volume_render_fidelity = "web-optimized"
         self._volume_palette_application: dict[str, Any] = {
             "palette": DEFAULT_COLOR_MAP,
             "requestedScaleMode": "linear",
@@ -156,7 +158,7 @@ class VTKDatacubeRenderer:
             "hasAlpha": False,
             "kind": "table",
         }
-        self._volume_opacity_points = (
+        self._web_volume_opacity_points = (
             (0.0, 0.0),
             (0.20, 0.0),
             (0.40, 0.06),
@@ -164,6 +166,9 @@ class VTKDatacubeRenderer:
             (0.85, 0.55),
             (1.0, 0.90),
         )
+        self._volume_opacity_points = self._web_volume_opacity_points
+        self.volume_mask: vtk.vtkImageData | None = None
+        self._volume_mask_details: dict[str, Any] = {"mode": "disabled"}
 
         warmup_started_ns = time.time_ns()
         self._configure_scene()
@@ -295,6 +300,7 @@ class VTKDatacubeRenderer:
                 stride = max(finite.size // 65_536, 1)
                 finite = finite[::stride]
             p01, p50, p99 = np.percentile(finite, [1.0, 50.0, 99.0]).astype(float)
+            rms = float(np.sqrt(np.mean(np.square(finite.astype(np.float64)))))
             non_zero_ratio = float(np.count_nonzero(np.abs(finite) > 0.0) / finite.size)
             dims = image_data.GetDimensions()
             summary = {
@@ -306,6 +312,7 @@ class VTKDatacubeRenderer:
                 "p01": float(p01),
                 "p50": float(p50),
                 "p99": float(p99),
+                "rms": rms,
                 "nonZeroRatio": non_zero_ratio,
                 "sampleCount": int(finite.size),
             }
@@ -327,6 +334,123 @@ class VTKDatacubeRenderer:
             )
         except Exception:  # pragma: no cover - diagnostic only
             self._log.exception("Failed to compute dataset scalar summary")
+    def _normalize_render_fidelity(self, value: Any) -> str:
+        if not isinstance(value, str):
+            return "web-optimized"
+        normalized = value.strip().casefold().replace("_", "-").replace(" ", "-")
+        if normalized in {"legacy", "legacy-fidelity", "legacyfidelity", "desktop"}:
+            return "legacy-fidelity"
+        return "web-optimized"
+
+    def _legacy_volume_opacity_points(self, scalar_range: tuple[float, float]) -> tuple[tuple[float, float], ...]:
+        lo, hi = scalar_range
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return (
+                (0.0, 0.0),
+                (0.5, 0.05),
+                (1.0, 0.30),
+            )
+
+        rms = None
+        if self._dataset_scalar_summary is not None:
+            value = self._dataset_scalar_summary.get("rms")
+            if isinstance(value, (int, float)) and np.isfinite(value) and float(value) > 0.0:
+                rms = float(value)
+
+        if rms is None:
+            lower_bound = lo + (hi - lo) * 0.25
+        else:
+            lower_bound = min(max(3.0 * rms, lo), hi)
+
+        if lower_bound <= lo:
+            lower_bound = lo + (hi - lo) * 0.15
+        if lower_bound >= hi:
+            lower_bound = lo + (hi - lo) * 0.85
+
+        span = max(hi - lo, 1e-12)
+        lower_fraction = min(max((lower_bound - lo) / span, 0.0), 1.0)
+        return (
+            (0.0, 0.0),
+            (lower_fraction, 0.05),
+            (1.0, 0.30),
+        )
+
+    def _configure_volume_mask(self, image_data: vtk.vtkImageData) -> None:
+        self.volume_mask = None
+        self._volume_mask_details = {"mode": "disabled"}
+        if self.gpu_volume_mapper is None or not hasattr(self.gpu_volume_mapper, "SetMaskInput"):
+            return
+        if self.volume_render_fidelity != "legacy-fidelity":
+            return
+
+        point_data = image_data.GetPointData()
+        scalars = point_data.GetScalars() if point_data is not None else None
+        if scalars is None:
+            return
+
+        values = numpy_support.vtk_to_numpy(scalars)
+        if values.size == 0:
+            return
+
+        mask_mode = "finite"
+        lower_bound = None
+        upper_bound = None
+
+        mask_array_vtk = point_data.GetArray(_VALIDITY_MASK_ARRAY_NAME) if point_data is not None else None
+        if mask_array_vtk is not None:
+            base_mask = numpy_support.vtk_to_numpy(mask_array_vtk) > 0
+            mask_mode = "importer-validity-mask"
+        else:
+            base_mask = np.isfinite(values)
+
+        if not np.any(base_mask):
+            return
+
+        effective_mask = base_mask.copy()
+
+        if self._dataset_scalar_summary is not None:
+            min_value = self._dataset_scalar_summary.get("min")
+            max_value = self._dataset_scalar_summary.get("max")
+            positive_min = self._dataset_scalar_summary.get("positiveMin")
+            if isinstance(min_value, (int, float)) and np.isfinite(min_value):
+                lower_bound = float(min_value)
+            if isinstance(max_value, (int, float)) and np.isfinite(max_value):
+                upper_bound = float(max_value)
+            if (
+                isinstance(positive_min, (int, float))
+                and np.isfinite(positive_min)
+                and lower_bound is not None
+                and lower_bound >= 0.0
+                and float(positive_min) > 0.0
+            ):
+                # For effectively positive-only cubes, also exclude zeros introduced by NaN sanitization.
+                lower_bound = float(positive_min)
+
+        if lower_bound is not None and upper_bound is not None and upper_bound > lower_bound:
+            effective_mask &= values >= lower_bound
+            effective_mask &= values <= upper_bound
+            mask_mode = f"{mask_mode}+range"
+
+        mask_array = np.where(effective_mask, 255, 0).astype(np.uint8, copy=False)
+        mask_vtk = numpy_support.numpy_to_vtk(mask_array, deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
+        mask_image = vtk.vtkImageData()
+        mask_image.DeepCopy(image_data)
+        mask_image.GetPointData().SetScalars(mask_vtk)
+        self.volume_mask = mask_image
+        self.gpu_volume_mapper.SetMaskInput(mask_image)
+        if hasattr(self.gpu_volume_mapper, "SetMaskTypeToBinary"):
+            self.gpu_volume_mapper.SetMaskTypeToBinary()
+
+        self._volume_mask_details = {
+            "mode": mask_mode,
+            "finiteVoxelCount": int(np.count_nonzero(np.isfinite(values))),
+            "baseMaskVoxelCount": int(np.count_nonzero(base_mask)),
+            "maskedVoxelCount": int(np.count_nonzero(mask_array)),
+            "totalVoxelCount": int(mask_array.size),
+            "lowerBound": lower_bound,
+            "upperBound": upper_bound,
+            "maskArrayPresent": mask_array_vtk is not None,
+        }
 
     def _scalar_summary_cache_key(self) -> tuple[str, int, int] | None:
         if not self.dataset_path:
@@ -350,7 +474,7 @@ class VTKDatacubeRenderer:
         if self.gpu_volume_mapper is not None:
             self._configure_mapper(self.gpu_volume_mapper, image_data)
         self._configure_mapper(self.cpu_fallback_mapper, image_data)
-
+        self._configure_volume_mask(image_data)
         self._configure_volume_transfer_functions(image_data)
         self.volume.SetMapper(self.volume_mapper)
         self.volume.SetProperty(self.volume_property)
@@ -682,12 +806,18 @@ class VTKDatacubeRenderer:
             scale_mode=self.volume_scale_mode,
             positive_floor=positive_floor,
         )
+        opacity_mode = "legacy" if self.volume_render_fidelity == "legacy-fidelity" else "web"
+        if self.volume_render_fidelity == "legacy-fidelity":
+            self._volume_opacity_points = self._legacy_volume_opacity_points((lo, hi))
+        else:
+            self._volume_opacity_points = self._web_volume_opacity_points
         opacity = vtk.vtkPiecewiseFunction()
         for fraction, alpha in self._volume_opacity_points:
             scalar = lo + (hi - lo) * fraction
             opacity.AddPoint(scalar, self._scaled_opacity(alpha))
 
         self._volume_palette_application = dict(palette_application)
+        self._volume_palette_application["opacityMode"] = opacity_mode
         self.volume_property.SetColor(color)
         self.volume_property.SetScalarOpacity(opacity)
         self.volume_property.SetInterpolationTypeToLinear()
@@ -830,6 +960,7 @@ class VTKDatacubeRenderer:
             "renderMode": self.volume_render_mode,
             "palette": self.volume_palette,
             "scaleMode": self.volume_scale_mode,
+            "renderFidelity": self.volume_render_fidelity,
             "effectiveScaleMode": self._volume_palette_application.get("effectiveScaleMode", self.volume_scale_mode),
             "positiveLogFloor": self._volume_palette_application.get("positiveLogFloor"),
             "paletteHasAlpha": self._volume_palette_application.get("hasAlpha", False),
@@ -995,11 +1126,38 @@ class VTKDatacubeRenderer:
                 "volumeRenderMode": self.volume_render_mode,
                 "palette": self.volume_palette,
                 "scaleMode": self.volume_scale_mode,
+                # --- BEGIN PATCHED BLOCK ---
+                "renderFidelity": self.volume_render_fidelity,
+                "opacityMode": self._volume_palette_application.get("opacityMode", "web"),
+                "finiteMin": self._dataset_scalar_summary.get("min") if self._dataset_scalar_summary else None,
+                "finiteMax": self._dataset_scalar_summary.get("max") if self._dataset_scalar_summary else None,
+                "positiveMin": self._dataset_scalar_summary.get("positiveMin") if self._dataset_scalar_summary else None,
+                "rms": self._dataset_scalar_summary.get("rms") if self._dataset_scalar_summary else None,
+                "dynamicRangeLog10": (
+                    float(np.log10(self._dataset_scalar_summary.get("max") / self._dataset_scalar_summary.get("positiveMin")))
+                    if self._dataset_scalar_summary
+                    and isinstance(self._dataset_scalar_summary.get("max"), (int, float))
+                    and isinstance(self._dataset_scalar_summary.get("positiveMin"), (int, float))
+                    and float(self._dataset_scalar_summary.get("max")) > 0.0
+                    and float(self._dataset_scalar_summary.get("positiveMin")) > 0.0
+                    else None
+                ),
                 "paletteCatalog": get_color_map_catalog(),
+                # --- END PATCHED BLOCK ---
                 "paletteApplication": dict(self._volume_palette_application),
                 "slicePaletteApplication": dict(self._slice_palette_application),
                 "stabilityMode": self.stability_mode,
                 "warmupMetrics": self.get_warmup_metrics(),
+                # --- BEGIN PATCHED BLOCK ---
+                "volumeMaskExists": self.volume_mask is not None,
+                "volumeMaskClass": self.volume_mask.GetClassName() if self.volume_mask is not None else None,
+                "volumeMaskDetails": dict(self._volume_mask_details),
+                "volumeMaskCoveragePercent": (
+                    float(self._volume_mask_details.get("maskedVoxelCount", 0) * 100.0 / self._volume_mask_details.get("totalVoxelCount", 1))
+                    if self._volume_mask_details.get("totalVoxelCount")
+                    else None
+                ),
+                # --- END PATCHED BLOCK ---
             }
         )
         return diagnostics
@@ -1043,6 +1201,9 @@ class VTKDatacubeRenderer:
         scale_mode_requested = None
         if isinstance(params.get("scaleMode"), str):
             scale_mode_requested = self._normalize_scale_mode(params["scaleMode"])
+        fidelity_requested = None
+        if isinstance(params.get("renderFidelity"), str):
+            fidelity_requested = self._normalize_render_fidelity(params["renderFidelity"])
         if isinstance(params.get("sampleDistanceScale"), (int, float)):
             self.volume_sample_distance_scale_override = max(0.1, float(params["sampleDistanceScale"]))
         if isinstance(params.get("imageSampleDistance"), (int, float)):
@@ -1101,7 +1262,11 @@ class VTKDatacubeRenderer:
         if scale_mode_requested is not None and scale_mode_requested != self.volume_scale_mode:
             self.volume_scale_mode = scale_mode_requested
             palette_changed = True
+        if fidelity_requested is not None and fidelity_requested != self.volume_render_fidelity:
+            self.volume_render_fidelity = fidelity_requested
+            palette_changed = True
         if palette_changed and self.image_data is not None:
+            self._configure_volume_mask(self.image_data)
             self._configure_volume_transfer_functions(self.image_data)
 
         self._apply_volume_render_mode()

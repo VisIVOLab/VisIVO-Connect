@@ -77,6 +77,7 @@ const elements = {
   volumePaletteSearch: document.getElementById("volumePaletteSearch"),
   volumePaletteOptions: document.getElementById("volumePaletteOptions"),
   volumeScaleMode: document.getElementById("volumeScaleMode"),
+  volumeRenderFidelity: document.getElementById("volumeRenderFidelity"),
   volumePalettePreview: document.getElementById("volumePalettePreview"),
   volumePalettePreviewCaption: document.getElementById("volumePalettePreviewCaption"),
   volumeSampleDistanceScale: document.getElementById("volumeSampleDistanceScale"),
@@ -191,6 +192,19 @@ const elements = {
   metricsVtkBuild: document.getElementById("metricsVtkBuild"),
   metricsFitsTotal: document.getElementById("metricsFitsTotal"),
   metricsFitsCacheHit: document.getElementById("metricsFitsCacheHit"),
+  metricsValidityMaskSource: document.getElementById("metricsValidityMaskSource"),
+  metricsValidityMaskPresent: document.getElementById("metricsValidityMaskPresent"),
+  metricsValidityMaskPackedInCache: document.getElementById("metricsValidityMaskPackedInCache"),
+  metricsValidityMaskAllValid: document.getElementById("metricsValidityMaskAllValid"),
+  metricsInvalidVoxelCount: document.getElementById("metricsInvalidVoxelCount"),
+  metricsNanVoxelCount: document.getElementById("metricsNanVoxelCount"),
+  metricsOpacityMode: document.getElementById("metricsOpacityMode"),
+  metricsFiniteMin: document.getElementById("metricsFiniteMin"),
+  metricsFiniteMax: document.getElementById("metricsFiniteMax"),
+  metricsPositiveMin: document.getElementById("metricsPositiveMin"),
+  metricsRms: document.getElementById("metricsRms"),
+  metricsDynamicRangeLog10: document.getElementById("metricsDynamicRangeLog10"),
+  metricsVolumeMaskCoverage: document.getElementById("metricsVolumeMaskCoverage"),
   touchRotateSensitivity: document.getElementById("touchRotateSensitivity"),
   touchRotateSensitivityValue: document.getElementById("touchRotateSensitivityValue"),
   touchPanSensitivity: document.getElementById("touchPanSensitivity"),
@@ -254,6 +268,7 @@ const state = {
     renderMode: "composite",
     palette: "Inferno",
     scaleMode: "linear",
+    renderFidelity: "web-optimized",
     availablePalettes: ["Inferno"],
     paletteCatalog: [],
     palettePreviewColors: [],
@@ -391,6 +406,16 @@ function basenameFromPath(value) {
   const normalized = value.trim().split("#", 1)[0].replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : normalized || "";
+}
+
+function normalizeRenderFidelity(value) {
+  if (typeof value !== "string") {
+    return "web-optimized";
+  }
+  const normalized = value.trim().toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-");
+  return normalized === "legacy-fidelity" || normalized === "legacy" || normalized === "desktop"
+    ? "legacy-fidelity"
+    : "web-optimized";
 }
 
 {
@@ -590,6 +615,7 @@ function buildPersistedStateSnapshot() {
       renderMode: state.volume.renderMode,
       palette: state.volume.palette,
       scaleMode: state.volume.scaleMode,
+      renderFidelity: state.volume.renderFidelity,
       opacityScale: state.volume.opacityScale,
       sampleDistanceScale: state.volume.sampleDistanceScale,
       sampleDistanceManual: state.volume.sampleDistanceManual,
@@ -705,6 +731,9 @@ function applyPersistedStateSnapshot(snapshot) {
     }
     if (typeof snapshot.volume.scaleMode === "string") {
       state.volume.scaleMode = snapshot.volume.scaleMode.toLowerCase().startsWith("log") ? "log" : "linear";
+    }
+    if (typeof snapshot.volume.renderFidelity === "string") {
+      state.volume.renderFidelity = normalizeRenderFidelity(snapshot.volume.renderFidelity);
     }
     if (Number.isFinite(snapshot.volume.opacityScale)) {
       state.volume.opacityScale = clampFloat(Number(snapshot.volume.opacityScale), 0.1, 4.0, state.volume.opacityScale);
@@ -1557,6 +1586,15 @@ elements.volumeScaleMode.addEventListener("change", () => {
   syncPalettePreview();
   sendRenderParams();
 });
+
+if (elements.volumeRenderFidelity) {
+  elements.volumeRenderFidelity.addEventListener("change", () => {
+    state.volume.renderFidelity = normalizeRenderFidelity(elements.volumeRenderFidelity.value);
+    sendRenderParams();
+    markMeaningfulSessionDirty();
+    syncVolumeControlsToUI();
+  });
+}
 
 document.addEventListener("click", (event) => {
   if (!state.volume.paletteMenuOpen) {
@@ -3285,6 +3323,9 @@ function syncVolumeControlsToUI() {
   syncVolumePaletteOptions();
   elements.volumeRenderMode.value = state.volume.renderMode;
   elements.volumeScaleMode.value = state.volume.scaleMode === "log" ? "log" : "linear";
+  if (elements.volumeRenderFidelity) {
+    elements.volumeRenderFidelity.value = state.volume.renderFidelity || "web-optimized";
+  }
   elements.volumeOpacityScale.value = String(state.volume.opacityScale);
   elements.volumeOpacityScaleValue.textContent = formatFloat(state.volume.opacityScale);
   const sampleDistanceScale = effectiveVolumeSampleDistanceScale();
@@ -3317,6 +3358,9 @@ function mergeVolumeParams(incoming) {
   }
   if (typeof incoming.scaleMode === "string") {
     state.volume.scaleMode = incoming.scaleMode.toLowerCase().startsWith("log") ? "log" : "linear";
+  }
+  if (typeof incoming.renderFidelity === "string") {
+    state.volume.renderFidelity = normalizeRenderFidelity(incoming.renderFidelity);
   }
   if (Array.isArray(incoming.palettePreviewColors) && incoming.palettePreviewColors.length > 0) {
     state.volume.palettePreviewColors = incoming.palettePreviewColors
@@ -3369,6 +3413,7 @@ function buildVolumeParamsPayload() {
     renderMode: state.volume.renderMode,
     palette: state.volume.palette,
     scaleMode: state.volume.scaleMode,
+    renderFidelity: state.volume.renderFidelity,
     opacityScale: state.volume.opacityScale,
     shade: state.volume.shade,
     sliceAxis: state.volume.sliceAxis,
@@ -3790,6 +3835,7 @@ function renderMetrics(payload) {
   setText(elements.metricsVtkBuild, formatMs(importMetrics.vtkBuildMs));
   setText(elements.metricsFitsTotal, formatMs(importMetrics.fitsTotalMs));
   setText(elements.metricsFitsCacheHit, formatBoolean(importMetrics.cacheHit));
+
 }
 
 function formatBoolean(value) {

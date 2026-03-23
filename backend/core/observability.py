@@ -4,6 +4,7 @@ from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import sys
+from typing import Any
 
 try:
     import resource
@@ -65,13 +66,30 @@ _last_fits_import_metrics: ContextVar[FitsImportMetrics | None] = ContextVar(
     default=None,
 )
 
+_last_fits_import_details: ContextVar[dict[str, Any] | None] = ContextVar(
+    "last_fits_import_details",
+    default=None,
+)
+
 
 def clear_last_fits_import_metrics() -> None:
     _last_fits_import_metrics.set(None)
+    _last_fits_import_details.set(None)
+
 
 
 def record_last_fits_import_metrics(metrics: FitsImportMetrics) -> None:
     _last_fits_import_metrics.set(metrics)
+
+
+def set_last_fits_import_details(details: dict[str, Any] | None) -> None:
+    _last_fits_import_details.set(dict(details) if details is not None else None)
+
+
+def consume_last_fits_import_details() -> dict[str, Any] | None:
+    details = _last_fits_import_details.get()
+    _last_fits_import_details.set(None)
+    return dict(details) if details is not None else None
 
 
 def consume_last_fits_import_metrics() -> FitsImportMetrics | None:

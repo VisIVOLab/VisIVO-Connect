@@ -184,6 +184,8 @@ async def _send_dataset_loading(
                 "fitsTotalMs": session.import_metrics.fits_total_ms,
                 "cacheHit": session.import_metrics.cache_hit,
             }
+            if session.import_details is not None:
+                payload["importDetails"] = dict(session.import_details)
         payload["warmupMetrics"] = session.renderer.get_warmup_metrics()
     await ws.send_json(payload)
 
@@ -1064,6 +1066,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 if session.import_metrics
                 else None
             ),
+            "importDetails": dict(session.import_details) if session.import_details is not None else None,
             "runtimeMetrics": {
                 "firstFrameLatencyMs": session.runtime_metrics.first_frame_latency_ms,
                 "firstFrameSessionInitMs": session.runtime_metrics.first_frame_session_init_ms,

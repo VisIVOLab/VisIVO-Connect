@@ -329,6 +329,13 @@
                         <option value="log">Logarithmic</option>
                       </select>
                     </label>
+                    <label class="field compact-field">
+                      <span>Render fidelity</span>
+                      <select id="volumeRenderFidelity">
+                        <option value="web-optimized" selected>Web optimized</option>
+                        <option value="legacy-fidelity">Legacy fidelity</option>
+                      </select>
+                    </label>
 
                     <div class="field compact-field">
                       <span>Palette preview</span>
@@ -783,6 +790,66 @@
                     <div class="metric-row">
                       <span class="metric-label">fits_cache_hit</span>
                       <span class="metric-value" id="metricsFitsCacheHit">-</span>
+                    </div>
+                  </div>
+
+                  <h3 class="metrics-subtitle">Validity Mask / Import Details</h3>
+                  <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">Validity mask source</span>
+                      <span class="metric-value" id="metricsValidityMaskSource">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Validity mask present</span>
+                      <span class="metric-value" id="metricsValidityMaskPresent">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Validity mask packed in cache</span>
+                      <span class="metric-value" id="metricsValidityMaskPackedInCache">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Validity mask all valid</span>
+                      <span class="metric-value" id="metricsValidityMaskAllValid">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Invalid voxel count</span>
+                      <span class="metric-value" id="metricsInvalidVoxelCount">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">NaN voxel count</span>
+                      <span class="metric-value" id="metricsNanVoxelCount">-</span>
+                    </div>
+                  </div>
+
+                  <h3 class="metrics-subtitle">Volume Diagnostics</h3>
+                  <div class="metrics-grid">
+                    <div class="metric-row">
+                      <span class="metric-label">Opacity mode</span>
+                      <span class="metric-value" id="metricsOpacityMode">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Finite min</span>
+                      <span class="metric-value" id="metricsFiniteMin">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Finite max</span>
+                      <span class="metric-value" id="metricsFiniteMax">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Positive min</span>
+                      <span class="metric-value" id="metricsPositiveMin">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">RMS</span>
+                      <span class="metric-value" id="metricsRms">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Dynamic range log10</span>
+                      <span class="metric-value" id="metricsDynamicRangeLog10">-</span>
+                    </div>
+                    <div class="metric-row">
+                      <span class="metric-label">Volume mask coverage</span>
+                      <span class="metric-value" id="metricsVolumeMaskCoverage">-</span>
                     </div>
                   </div>
                 </section>
