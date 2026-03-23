@@ -6,7 +6,7 @@ import time
 import uuid
 import gc
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -30,7 +30,21 @@ class Viewport:
     dpr: float = 1.0
 
 
+@dataclass
+class _RendererSlot:
+    renderer_id: str
+    renderer: Any
+    render_lock: threading.Lock = field(default_factory=threading.Lock)
+    in_use_count: int = 0
+    retired: bool = False
+    retired_ns: int | None = None
+
+
 class RemoteRenderSession:
+    @staticmethod
+    def _next_renderer_id() -> str:
+        return str(uuid.uuid4())
+
     @staticmethod
     def _create_renderer(dataset_path: str | None, *, dataset_load_mode: str) -> Any:
         from backend.rendering.vtk_datacube_renderer import VTKDatacubeRenderer
@@ -45,6 +59,8 @@ class RemoteRenderSession:
         self.session_id = str(uuid.uuid4())
         self._session_started_ns = time.time_ns()
         self.renderer = self._create_renderer(dataset_path, dataset_load_mode="auto")
+        self._active_renderer_slot = _RendererSlot(renderer_id=self._next_renderer_id(), renderer=self.renderer)
+        self._retired_renderer_slots: list[_RendererSlot] = []
         self._session_initialized_ns = time.time_ns()
         self.viewport = Viewport()
 
@@ -85,7 +101,11 @@ class RemoteRenderSession:
         self._warmup_task_started = False
         self.requested_quality_profiles: dict[str, Any] = {}
         self._refine_task: asyncio.Task[None] | None = None
+        self._renderer_swap_in_progress = False
+        self._last_renderer_swap_error: str | None = None
+        self._egl_context_error_detected = False
 
+        self._refresh_renderer_diagnostics_state()
         self.request_render()
 
     def _dataset_load_mode(self) -> str:
@@ -118,12 +138,69 @@ class RemoteRenderSession:
             "fullRendererReadyForSwap": False,
             "lastRefineError": None,
             "previewPinnedUntilFullReady": self._dataset_load_mode() == "preview",
+            "rendererSwapInProgress": False,
+            "activeRendererId": getattr(getattr(self, "_active_renderer_slot", None), "renderer_id", None),
+            "retiredRendererCount": len(getattr(self, "_retired_renderer_slots", [])),
+            "lastRendererSwapError": None,
+            "eglContextErrorDetected": False,
         }
         state.update(self._background_refine_policy())
         if not state.get("backgroundRefineEnabled"):
             state["refinePending"] = False
             state["previewPinnedUntilFullReady"] = False
         return state
+
+    def _refresh_renderer_diagnostics_state(self) -> None:
+        self.loading_state.update(
+            {
+                "rendererSwapInProgress": self._renderer_swap_in_progress,
+                "activeRendererId": self._active_renderer_slot.renderer_id if self._active_renderer_slot is not None else None,
+                "retiredRendererCount": len(self._retired_renderer_slots),
+                "lastRendererSwapError": self._last_renderer_swap_error,
+                "eglContextErrorDetected": self._egl_context_error_detected,
+            }
+        )
+
+    def _checkout_active_renderer_slot(self) -> _RendererSlot:
+        with self._renderer_lock:
+            slot = self._active_renderer_slot
+            slot.in_use_count += 1
+            return slot
+
+    def _release_renderer_slot(self, slot: _RendererSlot) -> None:
+        slots_to_close: list[_RendererSlot] = []
+        with self._renderer_lock:
+            slot.in_use_count = max(0, slot.in_use_count - 1)
+            slots_to_close = self._collect_retired_renderer_slots_locked()
+            self._refresh_renderer_diagnostics_state()
+        self._close_retired_renderer_slots(slots_to_close)
+
+    def _collect_retired_renderer_slots_locked(self) -> list[_RendererSlot]:
+        ready: list[_RendererSlot] = []
+        keep: list[_RendererSlot] = []
+        now_ns = time.time_ns()
+        for slot in self._retired_renderer_slots:
+            retired_long_enough = slot.retired_ns is not None and (now_ns - slot.retired_ns) >= 250_000_000
+            if slot.in_use_count == 0 and retired_long_enough:
+                ready.append(slot)
+            else:
+                keep.append(slot)
+        self._retired_renderer_slots = keep
+        return ready
+
+    def _close_retired_renderer_slots(self, slots: list[_RendererSlot]) -> None:
+        for slot in slots:
+            close_renderer = getattr(slot.renderer, "close", None)
+            if callable(close_renderer):
+                try:
+                    close_renderer()
+                except Exception:
+                    pass
+
+    def _retire_renderer_slot_locked(self, slot: _RendererSlot) -> None:
+        slot.retired = True
+        slot.retired_ns = time.time_ns()
+        self._retired_renderer_slots.append(slot)
 
     def _background_refine_policy(self) -> dict[str, Any]:
         renderer_backend = None
@@ -163,6 +240,7 @@ class RemoteRenderSession:
         if not self.loading_state.get("backgroundRefineEnabled"):
             self.loading_state["refinePending"] = False
             self.loading_state["previewPinnedUntilFullReady"] = False
+        self._refresh_renderer_diagnostics_state()
 
     def mark_refine_pending(self, pending: bool) -> None:
         self.loading_state["refinePending"] = bool(pending)
@@ -173,15 +251,15 @@ class RemoteRenderSession:
             self._refine_task = None
 
     def close(self) -> None:
+        slots_to_close: list[_RendererSlot] = []
         with self._renderer_lock:
             if self._closed:
                 return
             self._closed = True
             self.cancel_background_tasks()
-            try:
-                self.renderer.close()
-            except Exception:
-                pass
+            slots_to_close = [self._active_renderer_slot, *self._retired_renderer_slots]
+            self._retired_renderer_slots = []
+        self._close_retired_renderer_slots(slots_to_close)
 
     def request_render(self) -> None:
         self.last_activity_ns = time.time_ns()
@@ -210,9 +288,13 @@ class RemoteRenderSession:
         if normalized is None:
             return
         self.mode = normalized
-        with self._renderer_lock:
-            self.renderer.set_mode(self.mode)
-            self.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.set_mode(self.mode)
+                slot.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+        finally:
+            self._release_renderer_slot(slot)
         self.request_render()
 
     def begin_interaction(self) -> None:
@@ -223,8 +305,12 @@ class RemoteRenderSession:
 
     def resize(self, width: int, height: int, dpr: float) -> None:
         self.viewport = Viewport(width=max(width, 32), height=max(height, 32), dpr=max(dpr, 0.5))
-        with self._renderer_lock:
-            self.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+        finally:
+            self._release_renderer_slot(slot)
         self.request_render()
 
     def set_visualization_mode(self, mode: str) -> None:
@@ -232,9 +318,13 @@ class RemoteRenderSession:
         if normalized is None:
             return
         self.visualization.mode = normalized
-        with self._renderer_lock:
-            self.renderer.set_visualization_mode(normalized)
-            self.visualization.iso_value = self.renderer.get_iso_value()
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.set_visualization_mode(normalized)
+                self.visualization.iso_value = slot.renderer.get_iso_value()
+        finally:
+            self._release_renderer_slot(slot)
         self.request_render()
 
     def set_visualization_params(self, payload: dict[str, Any]) -> None:
@@ -253,14 +343,18 @@ class RemoteRenderSession:
         if isinstance(volume_params, dict):
             self.visualization.volume_params = dict(volume_params)
 
-        with self._renderer_lock:
-            self.renderer.set_visualization_mode(self.visualization.mode)
-            if self.visualization.iso_value is not None:
-                self.renderer.set_iso_value(self.visualization.iso_value)
-            if self.visualization.volume_params:
-                self.renderer.set_volume_params(self.visualization.volume_params)
-            self.visualization.iso_value = self.renderer.get_iso_value()
-            self.visualization.volume_params = self.renderer.get_volume_params()
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.set_visualization_mode(self.visualization.mode)
+                if self.visualization.iso_value is not None:
+                    slot.renderer.set_iso_value(self.visualization.iso_value)
+                if self.visualization.volume_params:
+                    slot.renderer.set_volume_params(self.visualization.volume_params)
+                self.visualization.iso_value = slot.renderer.get_iso_value()
+                self.visualization.volume_params = slot.renderer.get_volume_params()
+        finally:
+            self._release_renderer_slot(slot)
         self.request_render()
 
     def apply_pointer(self, payload: dict[str, Any]) -> None:
@@ -273,8 +367,12 @@ class RemoteRenderSession:
         buttons = int(payload.get("buttons", 1) or 1)
 
         move_mode = "pan" if buttons == 2 else "rotate"
-        with self._renderer_lock:
-            self.renderer.apply_pointer_delta(dx, dy, mode=move_mode)
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.apply_pointer_delta(dx, dy, mode=move_mode)
+        finally:
+            self._release_renderer_slot(slot)
         self._last_input_ns = time.time_ns()
         self.request_render()
 
@@ -284,12 +382,20 @@ class RemoteRenderSession:
         dy = float(payload.get("deltaY", 0.0))
 
         if mode == "pan":
-            with self._renderer_lock:
-                self.renderer.apply_pointer_delta(dx / 600.0, dy / 600.0, mode="pan")
+            slot = self._checkout_active_renderer_slot()
+            try:
+                with slot.render_lock:
+                    slot.renderer.apply_pointer_delta(dx / 600.0, dy / 600.0, mode="pan")
+            finally:
+                self._release_renderer_slot(slot)
         else:
             zoom = 1.0 + max(min(-dy / 1200.0, 0.3), -0.3)
-            with self._renderer_lock:
-                self.renderer.apply_zoom(zoom)
+            slot = self._checkout_active_renderer_slot()
+            try:
+                with slot.render_lock:
+                    slot.renderer.apply_zoom(zoom)
+            finally:
+                self._release_renderer_slot(slot)
 
         self._last_input_ns = time.time_ns()
         self.request_render()
@@ -299,8 +405,12 @@ class RemoteRenderSession:
         if scale <= 0.0:
             return
         zoom = 1.0 / max(min(scale, 1.8), 0.55)
-        with self._renderer_lock:
-            self.renderer.apply_zoom(zoom)
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.apply_zoom(zoom)
+        finally:
+            self._release_renderer_slot(slot)
         self._last_input_ns = time.time_ns()
         self.request_render()
 
@@ -325,9 +435,13 @@ class RemoteRenderSession:
             visual_mode = explicit_visual_mode
 
         if isinstance(render_scale, (int, float)):
-            with self._renderer_lock:
-                self.renderer.set_user_render_scale(float(render_scale))
-                self.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+            slot = self._checkout_active_renderer_slot()
+            try:
+                with slot.render_lock:
+                    slot.renderer.set_user_render_scale(float(render_scale))
+                    slot.renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
+            finally:
+                self._release_renderer_slot(slot)
 
         if isinstance(target_fps, (int, float)):
             self.target_stream_fps = min(max(float(target_fps), 5.0), 60.0)
@@ -360,20 +474,32 @@ class RemoteRenderSession:
         if isinstance(volume_params, dict):
             self.visualization.volume_params = dict(volume_params)
 
-        with self._renderer_lock:
-            self.renderer.set_visualization_mode(self.visualization.mode)
-            if self.visualization.iso_value is not None:
-                self.renderer.set_iso_value(self.visualization.iso_value)
-            if self.visualization.volume_params:
-                self.renderer.set_volume_params(self.visualization.volume_params)
-            self.visualization.iso_value = self.renderer.get_iso_value()
-            self.visualization.volume_params = self.renderer.get_volume_params()
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.set_visualization_mode(self.visualization.mode)
+                if self.visualization.iso_value is not None:
+                    slot.renderer.set_iso_value(self.visualization.iso_value)
+                if self.visualization.volume_params:
+                    slot.renderer.set_volume_params(self.visualization.volume_params)
+                self.visualization.iso_value = slot.renderer.get_iso_value()
+                self.visualization.volume_params = slot.renderer.get_volume_params()
+        finally:
+            self._release_renderer_slot(slot)
 
         if quality_mode is None:
             self.request_render()
 
     def state_payload(self, text: str | None = None) -> dict[str, Any]:
-        dataset_path = getattr(self.renderer, "dataset_path", None)
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                dataset_path = getattr(slot.renderer, "dataset_path", None)
+                volume_params = slot.renderer.get_volume_params()
+                renderer_diagnostics = slot.renderer.get_renderer_diagnostics()
+                scalar_lo, scalar_hi = slot.renderer.get_scalar_range()
+        finally:
+            self._release_renderer_slot(slot)
         payload: dict[str, Any] = {
             "type": "state",
             "datasetPath": dataset_path,
@@ -382,9 +508,9 @@ class RemoteRenderSession:
             "mode": self.mode,
             "visualizationMode": self.visualization.mode,
             "isoValue": self.visualization.iso_value,
-            "volume": self.renderer.get_volume_params(),
+            "volume": volume_params,
             "rendererDiagnostics": {
-                **self.renderer.get_renderer_diagnostics(),
+                **renderer_diagnostics,
                 "refinePending": bool(self.loading_state.get("refinePending")),
                 "refineScheduled": bool(self.loading_state.get("refineScheduled")),
                 "refineRunning": bool(self.loading_state.get("refineRunning")),
@@ -398,10 +524,14 @@ class RemoteRenderSession:
                 "fullRendererReadyForSwap": bool(self.loading_state.get("fullRendererReadyForSwap")),
                 "lastRefineError": self.loading_state.get("lastRefineError"),
                 "previewPinnedUntilFullReady": bool(self.loading_state.get("previewPinnedUntilFullReady")),
+                "rendererSwapInProgress": bool(self.loading_state.get("rendererSwapInProgress")),
+                "activeRendererId": self.loading_state.get("activeRendererId"),
+                "retiredRendererCount": self.loading_state.get("retiredRendererCount"),
+                "lastRendererSwapError": self.loading_state.get("lastRendererSwapError"),
+                "eglContextErrorDetected": bool(self.loading_state.get("eglContextErrorDetected")),
             },
             "datasetLoading": dict(self.loading_state),
         }
-        scalar_lo, scalar_hi = self.renderer.get_scalar_range()
         payload["isoRangeMin"] = scalar_lo
         payload["isoRangeMax"] = scalar_hi
         if text:
@@ -409,9 +539,10 @@ class RemoteRenderSession:
         return payload
 
     def switch_dataset(self, dataset_path: str) -> None:
+        slots_to_close: list[_RendererSlot] = []
         with self._renderer_lock:
             self.cancel_background_tasks()
-            previous_renderer = self.renderer
+            previous_slot = self._active_renderer_slot
             replacement = self._create_renderer(dataset_path, dataset_load_mode="auto")
             replacement.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
             replacement.set_mode(self.mode)
@@ -421,6 +552,9 @@ class RemoteRenderSession:
             if self.visualization.volume_params:
                 replacement.set_volume_params(self.visualization.volume_params)
             self.renderer = replacement
+            self._renderer_swap_in_progress = True
+            self._active_renderer_slot = _RendererSlot(renderer_id=self._next_renderer_id(), renderer=replacement)
+            self._retire_renderer_slot_locked(previous_slot)
             self.visualization = VisualizationState(
                 mode=self.renderer.get_visualization_mode(),
                 iso_value=self.renderer.get_iso_value(),
@@ -444,9 +578,11 @@ class RemoteRenderSession:
             self.stream_ready_sent_ns = None
             self.remote_answer_set_ns = None
             self.loading_state = self._initial_loading_state(dataset_path)
-            close_renderer = getattr(previous_renderer, "close", None)
-            if callable(close_renderer):
-                close_renderer()
+            self._renderer_swap_in_progress = False
+            self._last_renderer_swap_error = None
+            self._refresh_renderer_diagnostics_state()
+            slots_to_close = self._collect_retired_renderer_slots_locked()
+        self._close_retired_renderer_slots(slots_to_close)
         if self._is_large_dataset():
             gc.collect()
 
@@ -514,7 +650,7 @@ class RemoteRenderSession:
         volume_params = dict(self.visualization.volume_params)
         with self._renderer_lock:
             try:
-                camera_state = self.renderer.get_camera_state()
+                camera_state = self._active_renderer_slot.renderer.get_camera_state()
             except Exception:
                 camera_state = None
         try:
@@ -545,12 +681,16 @@ class RemoteRenderSession:
             raise
         self.loading_state["fullRendererReadyForSwap"] = True
 
+        slots_to_close: list[_RendererSlot] = []
         with self._renderer_lock:
             if self._closed:
                 replacement.close()
                 return
-            previous_renderer = self.renderer
+            previous_slot = self._active_renderer_slot
+            self._renderer_swap_in_progress = True
             self.renderer = replacement
+            self._active_renderer_slot = _RendererSlot(renderer_id=self._next_renderer_id(), renderer=replacement)
+            self._retire_renderer_slot_locked(previous_slot)
             self.import_metrics = import_metrics or self.import_metrics
             self.import_details = import_details or self.import_details
             self.visualization = VisualizationState(
@@ -570,9 +710,11 @@ class RemoteRenderSession:
                 }
             )
             self.set_loading_state(active=False, phase="complete", label="Full resolution ready")
-            close_renderer = getattr(previous_renderer, "close", None)
-            if callable(close_renderer):
-                close_renderer()
+            self._renderer_swap_in_progress = False
+            self._last_renderer_swap_error = None
+            self._refresh_renderer_diagnostics_state()
+            slots_to_close = self._collect_retired_renderer_slots_locked()
+        self._close_retired_renderer_slots(slots_to_close)
         gc.collect()
         self.request_render()
 
@@ -587,28 +729,33 @@ class RemoteRenderSession:
 
         interactive_req = _profile_request("interactive")
         hq_req = _profile_request("highQuality")
-        return {
-            "interactive": self.renderer.describe_effective_quality_profile(
-                mode="interactive",
-                width=viewport_width,
-                height=viewport_height,
-                dpr=viewport_dpr,
-                requested_render_scale=interactive_req.get("renderScale"),
-                requested_sample_distance_scale=interactive_req.get("sampleDistanceScale"),
-                requested_image_sample_distance=interactive_req.get("imageSampleDistance"),
-                requested_bitrate_mbps=interactive_req.get("bitrateMbps"),
-            ),
-            "highQuality": self.renderer.describe_effective_quality_profile(
-                mode="high-quality",
-                width=viewport_width,
-                height=viewport_height,
-                dpr=viewport_dpr,
-                requested_render_scale=hq_req.get("renderScale"),
-                requested_sample_distance_scale=hq_req.get("sampleDistanceScale"),
-                requested_image_sample_distance=hq_req.get("imageSampleDistance"),
-                requested_bitrate_mbps=hq_req.get("bitrateMbps"),
-            ),
-        }
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                return {
+                    "interactive": slot.renderer.describe_effective_quality_profile(
+                        mode="interactive",
+                        width=viewport_width,
+                        height=viewport_height,
+                        dpr=viewport_dpr,
+                        requested_render_scale=interactive_req.get("renderScale"),
+                        requested_sample_distance_scale=interactive_req.get("sampleDistanceScale"),
+                        requested_image_sample_distance=interactive_req.get("imageSampleDistance"),
+                        requested_bitrate_mbps=interactive_req.get("bitrateMbps"),
+                    ),
+                    "highQuality": slot.renderer.describe_effective_quality_profile(
+                        mode="high-quality",
+                        width=viewport_width,
+                        height=viewport_height,
+                        dpr=viewport_dpr,
+                        requested_render_scale=hq_req.get("renderScale"),
+                        requested_sample_distance_scale=hq_req.get("sampleDistanceScale"),
+                        requested_image_sample_distance=hq_req.get("imageSampleDistance"),
+                        requested_bitrate_mbps=hq_req.get("bitrateMbps"),
+                    ),
+                }
+        finally:
+            self._release_renderer_slot(slot)
 
     def mark_hello_received(self) -> None:
         if self.hello_received_ns is None:
@@ -640,8 +787,12 @@ class RemoteRenderSession:
     def prime_first_frame(self) -> None:
         if self._latest_frame is not None:
             return
-        with self._renderer_lock:
-            self.renderer.prewarm_volume_renderer()
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                slot.renderer.prewarm_volume_renderer()
+        finally:
+            self._release_renderer_slot(slot)
         self.render_if_needed(force=True)
 
     def maybe_start_warmup_task(self) -> bool:
@@ -656,14 +807,28 @@ class RemoteRenderSession:
     def render_if_needed(self, force: bool = False) -> FramePacket | None:
         if self._closed:
             return None
+        with self._renderer_lock:
+            active_slot = self._active_renderer_slot
+            target_update_interval = active_slot.renderer.target_update_interval
         now_ns = time.time_ns()
         if not force and self._last_render_finished_ns:
             elapsed_s = (now_ns - self._last_render_finished_ns) / 1e9
-            if not self._dirty and elapsed_s < self.renderer.target_update_interval:
+            if not self._dirty and elapsed_s < target_update_interval:
                 return self._latest_frame
 
-        with self._renderer_lock:
-            frame_rgb, started_ns, finished_ns, pipeline_metrics = self.renderer.render_rgb_frame()
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                frame_rgb, started_ns, finished_ns, pipeline_metrics = slot.renderer.render_rgb_frame()
+        except Exception as exc:
+            if "eglMakeCurrent" in str(exc):
+                with self._renderer_lock:
+                    self._egl_context_error_detected = True
+                    self._last_renderer_swap_error = str(exc)
+                    self._refresh_renderer_diagnostics_state()
+            raise
+        finally:
+            self._release_renderer_slot(slot)
         render_ms = float(pipeline_metrics.get("renderTimeMs", (finished_ns - started_ns) / 1e6))
         self.stats.add_sample(self.stats.render_time_ms, render_ms)
         capture_ms = pipeline_metrics.get("frameCaptureReadbackTimeMs")
@@ -725,17 +890,29 @@ class RemoteRenderSession:
 
     def _adapt_interactive_quality(self, render_ms: float) -> None:
         if self.mode != "interactive":
-            with self._renderer_lock:
-                if self.renderer.interactive_boost != 1.0:
-                    self.renderer.set_interactive_boost(1.0)
+            slot = self._checkout_active_renderer_slot()
+            try:
+                with slot.render_lock:
+                    if slot.renderer.interactive_boost != 1.0:
+                        slot.renderer.set_interactive_boost(1.0)
+            finally:
+                self._release_renderer_slot(slot)
             return
 
         if render_ms > 60.0:
-            with self._renderer_lock:
-                self.renderer.set_interactive_boost(self.renderer.interactive_boost * 1.1)
+            slot = self._checkout_active_renderer_slot()
+            try:
+                with slot.render_lock:
+                    slot.renderer.set_interactive_boost(slot.renderer.interactive_boost * 1.1)
+            finally:
+                self._release_renderer_slot(slot)
         elif render_ms < 28.0:
-            with self._renderer_lock:
-                self.renderer.set_interactive_boost(self.renderer.interactive_boost * 0.95)
+            slot = self._checkout_active_renderer_slot()
+            try:
+                with slot.render_lock:
+                    slot.renderer.set_interactive_boost(slot.renderer.interactive_boost * 0.95)
+            finally:
+                self._release_renderer_slot(slot)
 
 
 class SessionManager:

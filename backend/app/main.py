@@ -906,9 +906,14 @@ async def _ws_stream_loop(
     try:
         while True:
             loop_started_ns = time.time_ns()
-            frame_packet = session.render_if_needed()
-            if frame_packet is None:
-                frame_packet = session.render_if_needed(force=True)
+            try:
+                frame_packet = session.render_if_needed()
+                if frame_packet is None:
+                    frame_packet = session.render_if_needed(force=True)
+            except Exception:
+                log.exception("WS fallback render_if_needed failed session=%s", session.session_id)
+                await asyncio.sleep(min_interval_s)
+                continue
             if frame_packet is None:
                 await asyncio.sleep(min_interval_s)
                 continue
@@ -1024,6 +1029,7 @@ def _maybe_schedule_full_resolution_refine(session: RemoteRenderSession) -> None
             "activeRepresentation": "preview",
         }
     )
+    session._refresh_renderer_diagnostics_state()
     session._refine_task = asyncio.create_task(_run_full_resolution_refine(session))
 
 
@@ -1208,6 +1214,11 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "fullRendererReadyForSwap": bool(session.loading_state.get("fullRendererReadyForSwap")),
                 "lastRefineError": session.loading_state.get("lastRefineError"),
                 "previewPinnedUntilFullReady": bool(session.loading_state.get("previewPinnedUntilFullReady")),
+                "rendererSwapInProgress": bool(session.loading_state.get("rendererSwapInProgress")),
+                "activeRendererId": session.loading_state.get("activeRendererId"),
+                "retiredRendererCount": session.loading_state.get("retiredRendererCount"),
+                "lastRendererSwapError": session.loading_state.get("lastRendererSwapError"),
+                "eglContextErrorDetected": bool(session.loading_state.get("eglContextErrorDetected")),
             },
             "datasetLoading": dict(session.loading_state),
         }
