@@ -514,6 +514,7 @@ class RemoteRenderSession:
                 volume_params = slot.renderer.get_volume_params()
                 renderer_diagnostics = slot.renderer.get_renderer_diagnostics()
                 scalar_lo, scalar_hi = slot.renderer.get_scalar_range()
+                iso_lo, iso_hi = slot.renderer.get_iso_range() if hasattr(slot.renderer, "get_iso_range") else (scalar_lo, scalar_hi)
                 slice_reference = slot.renderer.get_slice_reference()
                 pointer_readout = slot.renderer.get_last_pointer_readout()
         finally:
@@ -552,8 +553,8 @@ class RemoteRenderSession:
             "sliceReference": slice_reference,
             "slicePointerReadout": pointer_readout,
         }
-        payload["isoRangeMin"] = scalar_lo
-        payload["isoRangeMax"] = scalar_hi
+        payload["isoRangeMin"] = iso_lo
+        payload["isoRangeMax"] = iso_hi
         if text:
             payload["text"] = text
         return payload

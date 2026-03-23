@@ -297,7 +297,7 @@ const state = {
     slicePointerReadout: null,
     cropping: {
       enabled: false,
-      bounds: [0, 1, 0, 1, 0, 1],
+      bounds: [0, 0, 0, 0, 0, 0],
     },
   },
   quality: {
@@ -649,7 +649,7 @@ function buildPersistedStateSnapshot() {
       wcsSystem: state.volume.wcsSystem,
       cropping: {
         enabled: Boolean(state.volume.cropping?.enabled),
-        bounds: Array.isArray(state.volume.cropping?.bounds) ? state.volume.cropping.bounds.slice(0, 6) : [0, 1, 0, 1, 0, 1],
+        bounds: Array.isArray(state.volume.cropping?.bounds) ? state.volume.cropping.bounds.slice(0, 6) : [0, 0, 0, 0, 0, 0],
       },
     },
     quality: {
@@ -792,11 +792,11 @@ function applyPersistedStateSnapshot(snapshot) {
       }
     }
     if (snapshot.volume.cropping && typeof snapshot.volume.cropping === "object") {
-      state.volume.cropping.enabled = Boolean(snapshot.volume.cropping.enabled);
+        state.volume.cropping.enabled = Boolean(snapshot.volume.cropping.enabled);
       if (Array.isArray(snapshot.volume.cropping.bounds) && snapshot.volume.cropping.bounds.length === 6) {
         state.volume.cropping.bounds = snapshot.volume.cropping.bounds.map((value, index) => {
           const fallback = state.volume.cropping.bounds[index] ?? 0;
-          return clampFloat(Number(value), 0.0, 1.0, fallback);
+          return Math.max(0, Math.round(Number.isFinite(Number(value)) ? Number(value) : fallback));
         });
       }
     }
@@ -3281,44 +3281,8 @@ function renderScientificAxis(container, axis, orientation) {
 }
 
 function renderScientificOverlay() {
-  const isSlice = state.visualization.mode === "volume" && state.volume.renderMode === "slice";
-  const reference = state.volume.sliceReference;
-  const showOverlay = Boolean(isSlice && reference?.wcsAxesVisible);
-  elements.scientificOverlay?.classList.toggle("hidden", !showOverlay);
-  elements.scientificOverlay?.setAttribute("aria-hidden", showOverlay ? "false" : "true");
-  renderScientificAxis(elements.scientificAxisBottom, reference?.bottomAxis, "bottom");
-  renderScientificAxis(elements.scientificAxisLeft, reference?.leftAxis, "left");
-  if (elements.scientificReadoutPrimary) {
-    const readout = state.volume.slicePointerReadout;
-    if (!isSlice) {
-      elements.scientificReadoutPrimary.textContent = "Slice readout unavailable";
-      elements.scientificReadoutSecondary.textContent = "";
-    } else if (readout?.imageCoord) {
-      const wcs = readout.wcsCoord;
-      const image = readout.imageCoord;
-      const prefix = `px (${image.i}, ${image.j})`;
-      elements.scientificReadoutPrimary.textContent = wcs
-        ? `${prefix} · ${formatWcsSystemName(readout.selectedWcsSystem)} ${wcs.lonLabel}, ${wcs.latLabel}`
-        : `${prefix} · WCS unavailable`;
-      const secondary = [];
-      const voxel = readout.voxelIndex;
-      if (voxel) {
-        secondary.push(`voxel x=${voxel.x}, y=${voxel.y}, z=${voxel.z}`);
-      }
-      const extras = readout.otherSystems || {};
-      Object.keys(extras).forEach((key) => {
-        const item = extras[key];
-        secondary.push(`${formatWcsSystemName(key)} ${item.lonLabel}, ${item.latLabel}`);
-      });
-      elements.scientificReadoutSecondary.textContent = secondary.join(" · ");
-    } else if (reference?.wcsAvailable) {
-      elements.scientificReadoutPrimary.textContent = `${formatWcsSystemName(state.volume.wcsSystem)} overlay active`;
-      elements.scientificReadoutSecondary.textContent = "Move the pointer over the slice to inspect pixel and WCS coordinates.";
-    } else {
-      elements.scientificReadoutPrimary.textContent = "Slice readout unavailable";
-      elements.scientificReadoutSecondary.textContent = reference?.wcsUnavailableReason || "";
-    }
-  }
+  elements.scientificOverlay?.classList.add("hidden");
+  elements.scientificOverlay?.setAttribute("aria-hidden", "true");
 }
 
 function clampFloat(value, min, max, fallback) {
@@ -3434,21 +3398,31 @@ function syncIsoControls(value) {
 }
 
 function syncCropBoundsFromUI() {
-  const raw = [
-    Number(elements.cropXMin.value),
-    Number(elements.cropXMax.value),
-    Number(elements.cropYMin.value),
-    Number(elements.cropYMax.value),
-    Number(elements.cropZMin.value),
-    Number(elements.cropZMax.value),
+  const clampCropPair = (loRaw, hiRaw, size) => {
+    const maxIndex = Math.max(0, Number(size || 1) - 1);
+    const lo = Math.max(0, Math.min(maxIndex, Math.round(Number(loRaw) || 0)));
+    const hi = Math.max(0, Math.min(maxIndex, Math.round(Number(hiRaw) || maxIndex)));
+    return [Math.min(lo, hi), Math.max(lo, hi)];
+  };
+  const x = clampCropPair(elements.cropXMin.value, elements.cropXMax.value, state.volume.sliceAxisSizes.x);
+  const y = clampCropPair(elements.cropYMin.value, elements.cropYMax.value, state.volume.sliceAxisSizes.y);
+  const z = clampCropPair(elements.cropZMin.value, elements.cropZMax.value, state.volume.sliceAxisSizes.z);
+  state.volume.cropping.bounds = [...x, ...y, ...z];
+  const inputs = [
+    [elements.cropXMin, x[0], state.volume.sliceAxisSizes.x],
+    [elements.cropXMax, x[1], state.volume.sliceAxisSizes.x],
+    [elements.cropYMin, y[0], state.volume.sliceAxisSizes.y],
+    [elements.cropYMax, y[1], state.volume.sliceAxisSizes.y],
+    [elements.cropZMin, z[0], state.volume.sliceAxisSizes.z],
+    [elements.cropZMax, z[1], state.volume.sliceAxisSizes.z],
   ];
-  state.volume.cropping.bounds = raw.map((v) => clamp01(v));
-  elements.cropXMin.value = formatFloat(state.volume.cropping.bounds[0]);
-  elements.cropXMax.value = formatFloat(state.volume.cropping.bounds[1]);
-  elements.cropYMin.value = formatFloat(state.volume.cropping.bounds[2]);
-  elements.cropYMax.value = formatFloat(state.volume.cropping.bounds[3]);
-  elements.cropZMin.value = formatFloat(state.volume.cropping.bounds[4]);
-  elements.cropZMax.value = formatFloat(state.volume.cropping.bounds[5]);
+  inputs.forEach(([element, value, size]) => {
+    const maxIndex = Math.max(0, Number(size || 1) - 1);
+    element.min = "0";
+    element.max = String(maxIndex);
+    element.step = "1";
+    element.value = String(value);
+  });
 }
 
 function syncVolumePaletteOptions() {
@@ -3765,7 +3739,11 @@ function mergeVolumeParams(incoming) {
       state.volume.cropping.enabled = cropping.enabled;
     }
     if (Array.isArray(cropping.bounds) && cropping.bounds.length === 6) {
-      state.volume.cropping.bounds = cropping.bounds.map((v) => clamp01(Number(v)));
+      state.volume.cropping.bounds = cropping.bounds.map((v, index) => {
+        const axis = index < 2 ? "x" : index < 4 ? "y" : "z";
+        const maxIndex = Math.max(0, Number(state.volume.sliceAxisSizes?.[axis] || 1) - 1);
+        return Math.max(0, Math.min(maxIndex, Math.round(Number(v) || 0)));
+      });
     }
   }
 }
@@ -3781,6 +3759,7 @@ function buildVolumeParamsPayload() {
     sliceAxis: state.volume.sliceAxis,
     sliceIndex: state.volume.sliceIndex,
     wcsSystem: state.volume.wcsSystem,
+    axesActorVisible: true,
     cropping: {
       enabled: state.volume.cropping.enabled,
       bounds: state.volume.cropping.bounds,
@@ -3817,7 +3796,11 @@ function applyAutoContrastPreset() {
   }
 
   state.volume.cropping.enabled = false;
-  state.volume.cropping.bounds = [0, 1, 0, 1, 0, 1];
+  state.volume.cropping.bounds = [
+    0, Math.max(0, state.volume.sliceAxisSizes.x - 1),
+    0, Math.max(0, state.volume.sliceAxisSizes.y - 1),
+    0, Math.max(0, state.volume.sliceAxisSizes.z - 1),
+  ];
   syncVolumeControlsToUI();
 }
 

@@ -110,6 +110,11 @@ class VTKDatacubeRenderer:
             self.render_window.SwapBuffersOff()
         self.render_window.AddRenderer(self.renderer)
         self.render_window.SetSize(self.window_width, self.window_height)
+        self.render_window_interactor = vtk.vtkRenderWindowInteractor()
+        self.render_window_interactor.SetRenderWindow(self.render_window)
+        orientation_widget_cls = getattr(vtk, "vtkOrientationMarkerWidget", None)
+        self.orientation_widget = orientation_widget_cls() if orientation_widget_cls is not None else None
+        self._orientation_widget_enabled = False
 
         self.window_to_image = vtk.vtkWindowToImageFilter()
         self.window_to_image.SetInput(self.render_window)
@@ -280,9 +285,6 @@ class VTKDatacubeRenderer:
         attach_started_ns = time.time_ns()
         self.renderer.AddVolume(self.volume)
         self.renderer.AddActor(self.outline_actor)
-        if self.axes_actor_visible and not self._axes_actor_added:
-            self.renderer.AddActor(self.axes_actor)
-            self._axes_actor_added = True
         self.renderer.SetBackground(0.03, 0.04, 0.06)
         self._warmup_metrics["scenePropAttachMs"] = (time.time_ns() - attach_started_ns) / 1e6
         camera_started_ns = time.time_ns()
@@ -886,13 +888,27 @@ class VTKDatacubeRenderer:
         self.axes_actor.SetCylinderRadius(0.02)
         self.axes_actor.SetConeRadius(0.18)
         self.axes_actor.AxisLabelsOn()
-        self.axes_actor.SetPosition(0.0, 0.0, 0.0)
-        self.axes_actor.SetVisibility(1 if self.axes_actor_visible else 0)
+        self.axes_actor.SetVisibility(1)
         self.axes_actor.PickableOff()
+        caption_scale = 0.38
+        for getter in ("GetXAxisCaptionActor2D", "GetYAxisCaptionActor2D", "GetZAxisCaptionActor2D"):
+            actor = getattr(self.axes_actor, getter, lambda: None)()
+            if actor is not None and hasattr(actor, "SetWidth"):
+                actor.SetWidth(caption_scale)
+                actor.SetHeight(caption_scale * 0.22)
+        if self.orientation_widget is not None and not self._orientation_widget_enabled:
+            try:
+                self.orientation_widget.SetOrientationMarker(self.axes_actor)
+                self.orientation_widget.SetInteractor(self.render_window_interactor)
+                self.orientation_widget.SetViewport(0.0, 0.0, 0.18, 0.18)
+                self.orientation_widget.InteractiveOff()
+                self.orientation_widget.SetEnabled(1 if self.axes_actor_visible else 0)
+                self._orientation_widget_enabled = True
+            except Exception:
+                self._log.exception("Failed to initialize orientation marker widget")
 
     def _configure_isosurface_pipeline(self, image_data: vtk.vtkImageData) -> None:
-        scalar_range = image_data.GetScalarRange()
-        default_iso = float(scalar_range[0] + (scalar_range[1] - scalar_range[0]) * 0.5)
+        iso_min, iso_max, default_iso = self._isosurface_range_defaults(image_data)
         self.iso_value = default_iso
         self.isosurface_pipeline = build_isosurface_pipeline(
             image_data=image_data,
@@ -900,6 +916,37 @@ class VTKDatacubeRenderer:
             visual_mode="high-quality",
         )
         self.isosurface_pipeline.actor.SetVisibility(0)
+        self._runtime_capabilities["isosurfaceRangeMin"] = iso_min
+        self._runtime_capabilities["isosurfaceRangeMax"] = iso_max
+
+    def _isosurface_range_defaults(self, image_data: vtk.vtkImageData) -> tuple[float, float, float]:
+        scalar_range = image_data.GetScalarRange()
+        scalar_lo = float(scalar_range[0])
+        scalar_hi = float(scalar_range[1])
+        finite_max = None
+        rms = None
+        if self._dataset_scalar_summary is not None:
+            max_value = self._dataset_scalar_summary.get("max")
+            rms_value = self._dataset_scalar_summary.get("rms")
+            if isinstance(max_value, (int, float)) and np.isfinite(max_value):
+                finite_max = float(max_value)
+            if isinstance(rms_value, (int, float)) and np.isfinite(rms_value) and float(rms_value) > 0.0:
+                rms = float(rms_value)
+        iso_max = finite_max if finite_max is not None else scalar_hi
+        iso_min = 3.0 * rms if rms is not None else scalar_lo
+        if not np.isfinite(iso_max):
+            iso_max = scalar_hi if np.isfinite(scalar_hi) else 1.0
+        if not np.isfinite(iso_min):
+            iso_min = scalar_lo if np.isfinite(scalar_lo) else 0.0
+        if iso_max <= iso_min:
+            if np.isfinite(scalar_lo) and np.isfinite(iso_max) and iso_max > scalar_lo:
+                iso_min = scalar_lo + (iso_max - scalar_lo) * 0.5
+            else:
+                iso_min = max(0.0, iso_max * 0.5)
+                if iso_max <= iso_min:
+                    iso_max = iso_min + 1.0
+        default_iso = min(max(iso_min, scalar_lo if np.isfinite(scalar_lo) else iso_min), iso_max)
+        return (float(iso_min), float(iso_max), float(default_iso))
 
     def _ensure_isosurface_pipeline(self) -> None:
         if self._isosurface_pipeline_initialized or self.image_data is None:
@@ -977,6 +1024,11 @@ class VTKDatacubeRenderer:
     def get_iso_value(self) -> float | None:
         return self.iso_value
 
+    def get_iso_range(self) -> tuple[float, float]:
+        if self.image_data is None:
+            return (0.0, 1.0)
+        return self._isosurface_range_defaults(self.image_data)[:2]
+
     def get_scalar_range(self) -> tuple[float, float]:
         if self.image_data is None:
             return (0.0, 1.0)
@@ -1025,7 +1077,13 @@ class VTKDatacubeRenderer:
             "sliceReference": dict(self._slice_reference),
             "cropping": {
                 "enabled": self.cropping_enabled,
-                "bounds": list(self.cropping_bounds_norm),
+                "bounds": list(self._cropping_bounds_indices()),
+                "boundsNorm": list(self.cropping_bounds_norm),
+                "axisSizes": {
+                    "x": self._slice_bounds_for_axis("x")[1] + 1,
+                    "y": self._slice_bounds_for_axis("y")[1] + 1,
+                    "z": self._slice_bounds_for_axis("z")[1] + 1,
+                },
             },
         }
 
@@ -1273,10 +1331,14 @@ class VTKDatacubeRenderer:
                 "wcsAvailable": bool(self._slice_reference.get("wcsAvailable")),
                 "selectedWcsSystem": self.selected_wcs_system,
                 "wcsAxesVisible": bool(self._slice_reference.get("wcsAxesVisible")),
-                "axesActorVisible": bool(self.axes_actor_visible and self.visualization_mode == "volume" and self.volume_render_mode != "slice"),
+                "axesActorVisible": bool(self.axes_actor_visible and not (self.visualization_mode == "volume" and self.volume_render_mode == "slice")),
+                "scientificLegendVisible": True,
+                "scientificLegendCompact": True,
                 "selectedSliceAxis": self.slice_axis,
                 "selectedSliceIndex": self.slice_index,
                 "selectedAxisSize": self._slice_reference.get("selectedAxisSize"),
+                "isoRangeMin": self.get_iso_range()[0],
+                "isoRangeMax": self.get_iso_range()[1],
                 "lastPointerImageCoord": (
                     dict(self._last_pointer_readout.get("imageCoord"))
                     if isinstance(self._last_pointer_readout, dict) and isinstance(self._last_pointer_readout.get("imageCoord"), dict)
@@ -1295,11 +1357,12 @@ class VTKDatacubeRenderer:
     def set_iso_value(self, iso_value: float | None) -> None:
         if iso_value is None:
             return
-        self.iso_value = float(iso_value)
+        iso_min, iso_max = self.get_iso_range()
+        self.iso_value = min(max(float(iso_value), iso_min), iso_max)
         if self.visualization_mode == "isosurface":
             self._ensure_isosurface_pipeline()
-        if self.isosurface_pipeline is not None:
-            self.isosurface_pipeline.set_iso_value(self.iso_value)
+            if self.isosurface_pipeline is not None:
+                self.isosurface_pipeline.set_iso_value(self.iso_value)
 
     def set_volume_opacity_scale(self, opacity_scale: float) -> None:
         self.volume_opacity_scale = min(max(float(opacity_scale), 0.0), 4.0)
@@ -1372,22 +1435,14 @@ class VTKDatacubeRenderer:
                 self.cropping_enabled = enabled
             bounds = crop_payload.get("bounds")
             if isinstance(bounds, (list, tuple)) and len(bounds) == 6:
-                floats = []
+                ints = []
                 for value in bounds:
                     if not isinstance(value, (int, float)):
-                        floats = []
+                        ints = []
                         break
-                    floats.append(float(value))
-                if len(floats) == 6:
-                    x0, x1, y0, y1, z0, z1 = floats
-                    self.cropping_bounds_norm = (
-                        max(0.0, min(1.0, x0)),
-                        max(0.0, min(1.0, x1)),
-                        max(0.0, min(1.0, y0)),
-                        max(0.0, min(1.0, y1)),
-                        max(0.0, min(1.0, z0)),
-                        max(0.0, min(1.0, z1)),
-                    )
+                    ints.append(int(round(float(value))))
+                if len(ints) == 6:
+                    self._set_cropping_bounds_indices(tuple(ints))
 
         palette_changed = False
         if palette_requested is not None and palette_requested != self.volume_palette:
@@ -1427,10 +1482,9 @@ class VTKDatacubeRenderer:
             self.slice_actor.SetVisibility(1 if show_slice else 0)
         if self.isosurface_pipeline is not None:
             self.isosurface_pipeline.actor.SetVisibility(0 if is_volume else 1)
-        self.outline_actor.SetVisibility(1 if is_volume else 0)
-        if self._axes_actor_added:
-            axes_visible = self.axes_actor_visible and (not show_slice)
-            self.axes_actor.SetVisibility(1 if axes_visible else 0)
+        self.outline_actor.SetVisibility(1)
+        if self.orientation_widget is not None and self._orientation_widget_enabled:
+            self.orientation_widget.SetEnabled(1 if self.axes_actor_visible else 0)
         self.set_profile(self.current_profile)
 
     def _apply_volume_render_mode(self) -> None:
@@ -1457,6 +1511,34 @@ class VTKDatacubeRenderer:
         if hasattr(self.volume_mapper, "SetCroppingRegionFlagsToSubVolume"):
             self.volume_mapper.SetCroppingRegionFlagsToSubVolume()
         self.volume_mapper.CroppingOn()
+
+    def _cropping_bounds_indices(self) -> tuple[int, int, int, int, int, int]:
+        sizes = self._image_dimensions_xyz()
+        norm = self.cropping_bounds_norm
+        values: list[int] = []
+        for axis_index, size in enumerate(sizes):
+            lo_norm = float(norm[axis_index * 2])
+            hi_norm = float(norm[axis_index * 2 + 1])
+            max_index = max(0, int(size) - 1)
+            lo = max(0, min(max_index, int(round(min(lo_norm, hi_norm) * max_index))))
+            hi = max(0, min(max_index, int(round(max(lo_norm, hi_norm) * max_index))))
+            values.extend((lo, hi))
+        return tuple(values)
+
+    def _set_cropping_bounds_indices(self, bounds: tuple[int, int, int, int, int, int]) -> None:
+        sizes = self._image_dimensions_xyz()
+        normalized: list[float] = []
+        for axis_index, size in enumerate(sizes):
+            lo = int(bounds[axis_index * 2])
+            hi = int(bounds[axis_index * 2 + 1])
+            max_index = max(0, int(size) - 1)
+            safe_lo = max(0, min(max_index, min(lo, hi)))
+            safe_hi = max(0, min(max_index, max(lo, hi)))
+            if max_index <= 0:
+                normalized.extend((0.0, 1.0))
+            else:
+                normalized.extend((safe_lo / max_index, safe_hi / max_index))
+        self.cropping_bounds_norm = tuple(normalized)
 
     def _volume_bounds_world(self) -> tuple[float, float, float, float, float, float]:
         if self.image_data is None:
@@ -1732,6 +1814,12 @@ class VTKDatacubeRenderer:
         if self._closed:
             return
         self._closed = True
+        try:
+            if self.orientation_widget is not None and self._orientation_widget_enabled:
+                self.orientation_widget.SetEnabled(0)
+                self._orientation_widget_enabled = False
+        except Exception:
+            pass
         try:
             if hasattr(self.render_window, "Finalize"):
                 self.render_window.Finalize()

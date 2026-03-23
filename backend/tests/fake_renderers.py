@@ -120,6 +120,9 @@ class SessionFakeRenderer:
     def get_iso_value(self) -> float:
         return self.iso_value
 
+    def get_iso_range(self) -> tuple[float, float]:
+        return (0.2, 1.0)
+
     def get_scalar_range(self) -> tuple[float, float]:
         return (0.0, 1.0)
 
@@ -155,8 +158,14 @@ class SessionFakeRenderer:
             "sliceAxisSizes": {"x": 2, "y": 2, "z": 2},
             "slicePosition": 0.5,
             "wcsSystem": self.selected_wcs_system,
+            "axesActorVisible": True,
             "sliceReference": dict(self.slice_reference),
-            "cropping": {"enabled": False, "bounds": [0, 1, 0, 1, 0, 1]},
+            "cropping": {
+                "enabled": False,
+                "bounds": [0, 1, 0, 1, 0, 1],
+                "boundsNorm": [0, 1, 0, 1, 0, 1],
+                "axisSizes": {"x": 2, "y": 2, "z": 2},
+            },
         }
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
@@ -227,6 +236,8 @@ class SessionFakeRenderer:
                 "selectedWcsSystem": self.selected_wcs_system,
                 "wcsAxesVisible": False,
                 "axesActorVisible": True,
+                "scientificLegendVisible": True,
+                "scientificLegendCompact": True,
                 "selectedSliceAxis": "z",
                 "selectedSliceIndex": 0,
                 "selectedAxisSize": 2,
