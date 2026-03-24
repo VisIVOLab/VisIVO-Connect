@@ -120,6 +120,12 @@ class VTKDatacubeRenderer:
         self.window_to_image.SetInput(self.render_window)
         self.window_to_image.SetInputBufferTypeToRGB()
         self.window_to_image.ReadFrontBufferOff()
+        if hasattr(self.window_to_image, "ShouldRerenderOff"):
+            # render_rgb_frame() already issues an explicit Render() before capture.
+            # Avoid a redundant render inside vtkWindowToImageFilter.Update().
+            self.window_to_image.ShouldRerenderOff()
+        elif hasattr(self.window_to_image, "SetShouldRerender"):
+            self.window_to_image.SetShouldRerender(False)
         self._frame_rgb_buffers: list[np.ndarray | None] = [None, None]
         self._frame_rgb_buffer_index = 0
 
