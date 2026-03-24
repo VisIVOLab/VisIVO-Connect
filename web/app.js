@@ -4222,6 +4222,8 @@ function renderMetrics(payload) {
   setMetricByLabel("ROI active", formatBoolean(pipeline.roiActive ?? renderer.roiActive));
   setMetricByLabel("ROI extra render", formatMs(pipeline.roiExtraRenderMs ?? renderer.roiExtraRenderMs));
   setMetricByLabel("ROI disabled reason", pipeline.roiDisabledReason || renderer.roiDisabledReason || "-");
+  setMetricByLabel("ROI guard bypassed for testing", formatBoolean(renderer.roiGuardBypassedForTesting));
+  setMetricByLabel("ROI guard bypass reason", renderer.roiGuardBypassReason || "-");
   setMetricByLabel("Memory policy", renderer.memoryPolicyApplied || "-");
   setText(elements.metricsWarmupScalarSummary, formatMs(warmup.scalarSummaryMs));
   setText(elements.metricsWarmupScalarSummaryCacheHit, formatBoolean(warmup.scalarSummaryCacheHit));

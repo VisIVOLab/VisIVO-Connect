@@ -207,6 +207,7 @@ class VTKDatacubeRenderer:
         self.user_render_scale = 1.0
         self.interactive_boost = 1.0
         self.roi_rendering_enabled = True
+        self.allow_roi_on_egl_preview = os.getenv("VISIVO_ALLOW_ROI_ON_EGL_PREVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
         self._roi_scale = 0.4
         self._last_roi_active = False
         self._last_roi_extra_render_ms = 0.0
@@ -1249,7 +1250,7 @@ class VTKDatacubeRenderer:
             return False, "not-interactive-mode"
         if self.visualization_mode != "volume" or self.volume_render_mode == "slice":
             return False, "slice-mode"
-        if self._large_dataset_preview_egl_guard_active():
+        if self._large_dataset_preview_egl_guard_active() and not self.allow_roi_on_egl_preview:
             return False, "preview-egl-large-dataset-guard"
         if self.volume_mapper is None:
             return False, "mapper-unavailable"
@@ -1385,6 +1386,8 @@ class VTKDatacubeRenderer:
                 "roiActive": bool(self._last_roi_active),
                 "roiExtraRenderMs": float(self._last_roi_extra_render_ms),
                 "roiDisabledReason": self._roi_render_activation_state()[1],
+                "roiGuardBypassedForTesting": bool(self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()),
+                "roiGuardBypassReason": "env-override" if (self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()) else None,
                 "selectedSliceAxis": self.slice_axis,
                 "selectedSliceIndex": self.slice_index,
                 "selectedAxisSize": self._slice_reference.get("selectedAxisSize"),

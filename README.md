@@ -391,6 +391,15 @@ New centralized env/config surface (see [.env.example](.env.example)):
   - `VISIVO_VTK_RENDER_WINDOW`
   - `VISIVO_SMART_MAPPER_MODE`
   - `VISIVO_VTK_MAIN_THREAD`
+  - `VISIVO_ALLOW_ROI_ON_EGL_PREVIEW`
+
+`VISIVO_ALLOW_ROI_ON_EGL_PREVIEW`:
+- default: `0` / disabled
+- purpose: testing-only override for center-priority ROI rendering on `preview + large dataset + EGL`
+- default production behavior keeps ROI disabled in that condition for stability
+- set to `1` only for controlled experiments; Metrics will show:
+  - `ROI guard bypassed for testing`
+  - `ROI guard bypass reason = env-override`
 
 ### Dataset Configuration Modes
 
@@ -493,6 +502,10 @@ VISIVO_ALLOWED_ORIGINS='["https://visivo.example.org"]'
 VISIVO_FORCE_RELAY_ONLY=1
 VISIVO_ICE_SERVERS='[{"urls":["turn:turn.example.org:3478?transport=tcp","turn:turn.example.org:3478?transport=udp"],"username":"visivo","credential":"change-me"}]'
 VISIVO_CLIENT_ICE_SERVERS='[{"urls":["turn:turn.example.org:3478?transport=tcp","turn:turn.example.org:3478?transport=udp"],"username":"visivo","credential":"change-me"}]'
+
+# Testing only: bypass ROI safety guard on preview + large dataset + EGL.
+# Keep disabled in production unless you are explicitly profiling ROI behavior.
+VISIVO_ALLOW_ROI_ON_EGL_PREVIEW=0
 ```
 
 ## Recovery / Error Handling Notes
