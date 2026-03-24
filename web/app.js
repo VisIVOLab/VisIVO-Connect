@@ -88,6 +88,13 @@ const elements = {
   volumePalettePreviewCaption: document.getElementById("volumePalettePreviewCaption"),
   volumeSampleDistanceScale: document.getElementById("volumeSampleDistanceScale"),
   volumeSampleDistanceScaleValue: document.getElementById("volumeSampleDistanceScaleValue"),
+  roiControls: document.getElementById("roiControls"),
+  roiEnabled: document.getElementById("roiEnabled"),
+  roiSize: document.getElementById("roiSize"),
+  roiSizeValue: document.getElementById("roiSizeValue"),
+  roiFeather: document.getElementById("roiFeather"),
+  roiFeatherValue: document.getElementById("roiFeatherValue"),
+  roiControlsStatus: document.getElementById("roiControlsStatus"),
   volumeImageSampleDistance: document.getElementById("volumeImageSampleDistance"),
   volumeImageSampleDistanceValue: document.getElementById("volumeImageSampleDistanceValue"),
   volumeShade: document.getElementById("volumeShade"),
@@ -298,6 +305,9 @@ const state = {
     sampleDistanceManual: false,
     imageSampleDistance: null,
     imageSampleDistanceManual: false,
+    roiEnabled: true,
+    roiSize: 0.3,
+    roiFeather: 0.08,
     shade: true,
     sliceAxis: "z",
     sliceIndex: 0,
@@ -654,6 +664,9 @@ function buildPersistedStateSnapshot() {
       sampleDistanceManual: state.volume.sampleDistanceManual,
       imageSampleDistance: state.volume.imageSampleDistance,
       imageSampleDistanceManual: state.volume.imageSampleDistanceManual,
+      roiEnabled: state.volume.roiEnabled,
+      roiSize: state.volume.roiSize,
+      roiFeather: state.volume.roiFeather,
       shade: state.volume.shade,
       sliceAxis: state.volume.sliceAxis,
       sliceIndex: state.volume.sliceIndex,
@@ -785,6 +798,15 @@ function applyPersistedStateSnapshot(snapshot) {
     if (state.volume.imageSampleDistanceManual && Number.isFinite(snapshot.volume.imageSampleDistance)) {
       state.volume.imageSampleDistance = clampFloat(Number(snapshot.volume.imageSampleDistance), 1.0, 4.0, state.volume.imageSampleDistance ?? 1.0);
     }
+    if (typeof snapshot.volume.roiEnabled === "boolean") {
+      state.volume.roiEnabled = snapshot.volume.roiEnabled;
+    }
+    if (Number.isFinite(snapshot.volume.roiSize)) {
+      state.volume.roiSize = clampFloat(Number(snapshot.volume.roiSize), 0.2, 0.5, state.volume.roiSize);
+    }
+    if (Number.isFinite(snapshot.volume.roiFeather)) {
+      state.volume.roiFeather = clampFloat(Number(snapshot.volume.roiFeather), 0.02, 0.12, state.volume.roiFeather);
+    }
     if (typeof snapshot.volume.shade === "boolean") {
       state.volume.shade = snapshot.volume.shade;
     }
@@ -897,6 +919,9 @@ function hasMeaningfulPersistedState() {
     || Math.abs((Number(state.volume.opacityScale) || 0) - 1.8) > 1e-6
     || state.volume.sampleDistanceManual
     || state.volume.imageSampleDistanceManual
+    || state.volume.roiEnabled !== true
+    || Math.abs((Number(state.volume.roiSize) || 0) - 0.3) > 1e-6
+    || Math.abs((Number(state.volume.roiFeather) || 0) - 0.08) > 1e-6
     || state.volume.shade !== true
     || state.volume.sliceAxis !== "z"
     || Math.abs((Number(state.volume.sliceIndex) || 0) - 0) > 1e-6
@@ -1725,6 +1750,24 @@ if (elements.volumeRenderFidelity) {
     syncVolumeControlsToUI();
   });
 }
+
+elements.roiEnabled?.addEventListener("change", () => {
+  state.volume.roiEnabled = Boolean(elements.roiEnabled.checked);
+  syncRoiControlsUI();
+  sendRenderParams();
+});
+
+elements.roiSize?.addEventListener("input", () => {
+  state.volume.roiSize = clampFloat(Number(elements.roiSize.value), 0.2, 0.5, state.volume.roiSize);
+  syncRoiControlsUI();
+  sendRenderParams();
+});
+
+elements.roiFeather?.addEventListener("input", () => {
+  state.volume.roiFeather = clampFloat(Number(elements.roiFeather.value), 0.02, 0.12, state.volume.roiFeather);
+  syncRoiControlsUI();
+  sendRenderParams();
+});
 
 document.addEventListener("click", (event) => {
   if (!state.volume.paletteMenuOpen) {
@@ -3398,6 +3441,7 @@ function toggleVisualizationControls() {
   elements.volumeControls.classList.toggle("hidden", !isVolume);
   elements.sliceControls.classList.toggle("hidden", !isSlice);
   elements.cropControls.classList.toggle("hidden", !isVolume);
+  syncRoiControlsUI();
   renderScientificOverlay();
 }
 
@@ -3626,6 +3670,38 @@ function syncPalettePreview() {
   elements.volumePaletteButtonSwatch.style.background = paletteGradient(colors);
 }
 
+function syncRoiControlsUI() {
+  if (!elements.roiEnabled || !elements.roiSize || !elements.roiFeather) {
+    return;
+  }
+  const isVolume = state.visualization.mode === "volume";
+  const isSlice = isVolume && state.volume.renderMode === "slice";
+  const controlsEnabled = isVolume && !isSlice;
+
+  elements.roiEnabled.checked = Boolean(state.volume.roiEnabled);
+  elements.roiEnabled.disabled = !controlsEnabled;
+  elements.roiSize.value = Number(state.volume.roiSize).toFixed(2);
+  elements.roiFeather.value = Number(state.volume.roiFeather).toFixed(2);
+  elements.roiSize.disabled = !controlsEnabled || !state.volume.roiEnabled;
+  elements.roiFeather.disabled = !controlsEnabled || !state.volume.roiEnabled;
+  elements.roiSizeValue.textContent = Number(state.volume.roiSize).toFixed(2);
+  elements.roiFeatherValue.textContent = Number(state.volume.roiFeather).toFixed(2);
+  if (elements.roiControls) {
+    elements.roiControls.classList.toggle("is-disabled", !controlsEnabled);
+  }
+  if (elements.roiControlsStatus) {
+    if (!isVolume) {
+      elements.roiControlsStatus.textContent = "Center detail boost is available in volume rendering only.";
+    } else if (isSlice) {
+      elements.roiControlsStatus.textContent = "Center detail boost is disabled in slice mode.";
+    } else if (!state.volume.roiEnabled) {
+      elements.roiControlsStatus.textContent = "Center detail boost is off for this session.";
+    } else {
+      elements.roiControlsStatus.textContent = "Center detail boost applies during interactive volume rendering.";
+    }
+  }
+}
+
 function syncVolumeControlsToUI() {
   syncVolumePaletteOptions();
   elements.volumeRenderMode.value = state.volume.renderMode;
@@ -3668,6 +3744,7 @@ function syncVolumeControlsToUI() {
   }
   elements.cropEnabled.checked = Boolean(state.volume.cropping.enabled);
   syncCropBoundsFromUI();
+  syncRoiControlsUI();
   syncPalettePreview();
   renderPaletteMenu();
   toggleVisualizationControls();
@@ -3709,6 +3786,15 @@ function mergeVolumeParams(incoming) {
     if (state.volume.imageSampleDistanceManual) {
       state.volume.imageSampleDistance = Math.max(1.0, Number(incoming.imageSampleDistance));
     }
+  }
+  if (typeof incoming.roiEnabled === "boolean") {
+    state.volume.roiEnabled = incoming.roiEnabled;
+  }
+  if (Number.isFinite(incoming.roiSize)) {
+    state.volume.roiSize = clampFloat(Number(incoming.roiSize), 0.2, 0.5, state.volume.roiSize);
+  }
+  if (Number.isFinite(incoming.roiFeather)) {
+    state.volume.roiFeather = clampFloat(Number(incoming.roiFeather), 0.02, 0.12, state.volume.roiFeather);
   }
   if (typeof incoming.shade === "boolean") {
     state.volume.shade = incoming.shade;
@@ -3791,6 +3877,9 @@ function buildVolumeParamsPayload() {
   };
   payload.sampleDistanceScale = effectiveVolumeSampleDistanceScale(state.renderMode);
   payload.imageSampleDistance = effectiveVolumeImageSampleDistance(state.renderMode);
+  payload.roiEnabled = Boolean(state.volume.roiEnabled);
+  payload.roiSize = clampFloat(Number(state.volume.roiSize), 0.2, 0.5, 0.3);
+  payload.roiFeather = clampFloat(Number(state.volume.roiFeather), 0.02, 0.12, 0.08);
   return payload;
 }
 

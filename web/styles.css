@@ -737,6 +737,23 @@ input {
   margin-bottom: 8px;
 }
 
+.advanced-rendering-group {
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(8, 14, 22, 0.42);
+  border: 1px solid rgba(140, 173, 211, 0.1);
+}
+
+.field-note {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.advanced-rendering-group.is-disabled {
+  opacity: 0.7;
+}
+
 .field-row {
   display: flex;
   align-items: center;

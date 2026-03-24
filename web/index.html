@@ -190,6 +190,28 @@
                     </select>
                   </label>
 
+                  <div class="field advanced-rendering-group" id="roiControls">
+                    <span>Advanced rendering</span>
+                    <label class="check-row">
+                      <input id="roiEnabled" type="checkbox" checked />
+                      <span>Center detail boost</span>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>ROI size</span>
+                      <input id="roiSize" type="range" min="0.2" max="0.5" step="0.05" value="0.3" />
+                      <output id="roiSizeValue">0.30</output>
+                    </label>
+
+                    <label class="field compact-field">
+                      <span>Edge feather</span>
+                      <input id="roiFeather" type="range" min="0.02" max="0.12" step="0.01" value="0.08" />
+                      <output id="roiFeatherValue">0.08</output>
+                    </label>
+
+                    <div class="field-note" id="roiControlsStatus">Available in interactive volume rendering.</div>
+                  </div>
+
                   <div class="field">
                     <span>Touch tuning (debug)</span>
 

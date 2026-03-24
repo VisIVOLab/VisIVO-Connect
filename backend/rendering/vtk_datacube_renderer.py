@@ -1076,6 +1076,9 @@ class VTKDatacubeRenderer:
             "opacityScale": self.volume_opacity_scale,
             "sampleDistanceScale": self.volume_sample_distance_scale_override,
             "imageSampleDistance": self.volume_image_sample_distance_override,
+            "roiEnabled": bool(self.roi_rendering_enabled),
+            "roiSize": float(self._roi_scale),
+            "roiFeather": float(self._roi_feather_factor),
             "shade": self.volume_shade_override,
             "sliceAxis": self.slice_axis,
             "sliceIndex": self.slice_index,
@@ -1267,7 +1270,9 @@ class VTKDatacubeRenderer:
             return False, "roi-feature-disabled"
         if getattr(self.current_profile, "name", "") != "interactive":
             return False, "not-interactive-mode"
-        if self.visualization_mode != "volume" or self.volume_render_mode == "slice":
+        if self.visualization_mode != "volume":
+            return False, "non-volume-mode"
+        if self.volume_render_mode == "slice":
             return False, "slice-mode"
         if self._large_dataset_preview_egl_guard_active() and not self.allow_roi_on_egl_preview:
             return False, "preview-egl-large-dataset-guard"
@@ -1278,19 +1283,19 @@ class VTKDatacubeRenderer:
         return True, None
 
     def _read_roi_size(self) -> float:
-        value = os.getenv("VISIVO_ROI_SIZE", "0.4")
+        value = os.getenv("VISIVO_ROI_SIZE", "0.3")
         try:
             parsed = float(value)
         except (TypeError, ValueError):
-            parsed = 0.4
+            parsed = 0.3
         return min(max(parsed, 0.1), 0.9)
 
     def _read_roi_feather(self) -> float:
-        value = os.getenv("VISIVO_ROI_FEATHER", "0.05")
+        value = os.getenv("VISIVO_ROI_FEATHER", "0.08")
         try:
             parsed = float(value)
         except (TypeError, ValueError):
-            parsed = 0.05
+            parsed = 0.08
         return min(max(parsed, 0.01), 0.25)
 
     def _capture_rgb_buffer(self) -> tuple[np.ndarray, int, int]:
@@ -1442,6 +1447,7 @@ class VTKDatacubeRenderer:
                 "scientificLegendVisible": True,
                 "scientificLegendCompact": True,
                 "roiRenderingEnabled": bool(self.roi_rendering_enabled),
+                "roiEnabledByUser": bool(self.roi_rendering_enabled),
                 "roiSize": f"{float(self._roi_scale):.1f}x",
                 "roiSizeEffective": float(self._roi_scale),
                 "roiActive": bool(self._last_roi_active),
@@ -1530,6 +1536,12 @@ class VTKDatacubeRenderer:
                     clamped,
                     self.current_profile.name,
                 )
+        if isinstance(params.get("roiEnabled"), bool):
+            self.roi_rendering_enabled = bool(params["roiEnabled"])
+        if isinstance(params.get("roiSize"), (int, float)):
+            self._roi_scale = min(max(float(params["roiSize"]), 0.1), 0.9)
+        if isinstance(params.get("roiFeather"), (int, float)):
+            self._roi_feather_factor = min(max(float(params["roiFeather"]), 0.01), 0.25)
         if isinstance(params.get("shade"), bool):
             self.volume_shade_override = bool(params["shade"])
         if isinstance(params.get("axesActorVisible"), bool):
@@ -1994,6 +2006,7 @@ class VTKDatacubeRenderer:
             "windowHeight": int(self.window_height),
             "qualityProfile": self.current_profile.name,
             "roiRenderingEnabled": bool(self.roi_rendering_enabled),
+            "roiEnabledByUser": bool(self.roi_rendering_enabled),
             "roiSize": f"{float(self._roi_scale):.1f}x",
             "roiSizeEffective": float(self._roi_scale),
             "roiActive": bool(roi_active),
