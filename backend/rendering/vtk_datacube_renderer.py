@@ -212,6 +212,10 @@ class VTKDatacubeRenderer:
         self._last_roi_active = False
         self._last_roi_extra_render_ms = 0.0
         self._last_roi_disabled_reason: str | None = None
+        self._roi_feather_enabled = True
+        self._roi_feather_cache_key: tuple[int, int, int, int] | None = None
+        self._roi_feather_cache: np.ndarray | None = None
+        self._initial_camera_state: dict[str, Any] | None = None
         self.set_profile(self.current_profile)
         self.set_visualization_mode("volume")
         self._warmup_metrics["totalRendererWarmupMs"] = (time.time_ns() - warmup_started_ns) / 1e6
@@ -297,6 +301,7 @@ class VTKDatacubeRenderer:
         self._warmup_metrics["scenePropAttachMs"] = (time.time_ns() - attach_started_ns) / 1e6
         camera_started_ns = time.time_ns()
         self.renderer.ResetCamera()
+        self._initial_camera_state = self.get_camera_state()
         self._warmup_metrics["cameraResetMs"] = (time.time_ns() - camera_started_ns) / 1e6
 
     def _log_scalar_summary(self, image_data: vtk.vtkImageData) -> None:
@@ -1119,12 +1124,15 @@ class VTKDatacubeRenderer:
 
     def get_camera_state(self) -> dict[str, Any]:
         camera = self.renderer.GetActiveCamera()
-        return {
+        state = {
             "position": list(camera.GetPosition()),
             "focalPoint": list(camera.GetFocalPoint()),
             "viewUp": list(camera.GetViewUp()),
             "clippingRange": list(camera.GetClippingRange()),
         }
+        if hasattr(camera, "GetParallelScale"):
+            state["parallelScale"] = float(camera.GetParallelScale())
+        return state
 
     def apply_camera_state(self, state: dict[str, Any] | None) -> None:
         if not isinstance(state, dict):
@@ -1134,6 +1142,7 @@ class VTKDatacubeRenderer:
         focal_point = state.get("focalPoint")
         view_up = state.get("viewUp")
         clipping_range = state.get("clippingRange")
+        parallel_scale = state.get("parallelScale")
         if isinstance(position, (list, tuple)) and len(position) == 3:
             camera.SetPosition(*[float(value) for value in position])
         if isinstance(focal_point, (list, tuple)) and len(focal_point) == 3:
@@ -1142,7 +1151,15 @@ class VTKDatacubeRenderer:
             camera.SetViewUp(*[float(value) for value in view_up])
         if isinstance(clipping_range, (list, tuple)) and len(clipping_range) == 2:
             camera.SetClippingRange(float(clipping_range[0]), float(clipping_range[1]))
+        if isinstance(parallel_scale, (int, float)) and hasattr(camera, "SetParallelScale"):
+            camera.SetParallelScale(float(parallel_scale))
         self.renderer.ResetCameraClippingRange()
+
+    def reset_camera(self) -> None:
+        if isinstance(self._initial_camera_state, dict):
+            self.apply_camera_state(self._initial_camera_state)
+            return
+        self.renderer.ResetCamera()
 
     def _profile_for_mode(self, mode: str) -> QualityProfile:
         return INTERACTIVE_PROFILE if str(mode).strip().lower() == "interactive" else HIGH_QUALITY_PROFILE
@@ -1270,6 +1287,30 @@ class VTKDatacubeRenderer:
         self._frame_rgb_buffer[:] = arr[::-1]
         return self._frame_rgb_buffer, int(width), int(height)
 
+    def _roi_feather_mask(self, roi_w: int, roi_h: int) -> np.ndarray:
+        cache_key = (int(roi_w), int(roi_h), int(max(1, round(roi_w * 0.08))), int(max(1, round(roi_h * 0.08))))
+        if self._roi_feather_cache_key == cache_key and self._roi_feather_cache is not None:
+            return self._roi_feather_cache
+
+        feather_x = max(1, min(int(round(roi_w * 0.08)), roi_w // 4 if roi_w > 4 else 1))
+        feather_y = max(1, min(int(round(roi_h * 0.08)), roi_h // 4 if roi_h > 4 else 1))
+
+        x = np.ones(roi_w, dtype=np.float32)
+        y = np.ones(roi_h, dtype=np.float32)
+        if feather_x > 0:
+            ramp_x = np.linspace(0.0, 1.0, feather_x, endpoint=False, dtype=np.float32)
+            x[:feather_x] = ramp_x
+            x[-feather_x:] = ramp_x[::-1]
+        if feather_y > 0:
+            ramp_y = np.linspace(0.0, 1.0, feather_y, endpoint=False, dtype=np.float32)
+            y[:feather_y] = ramp_y
+            y[-feather_y:] = ramp_y[::-1]
+
+        mask = np.minimum.outer(y, x).astype(np.float32, copy=False)[..., None]
+        self._roi_feather_cache_key = cache_key
+        self._roi_feather_cache = mask
+        return mask
+
     def prewarm_volume_renderer(self) -> None:
         if self._gpu_volume_prewarmed or self.visualization_mode != "volume":
             return
@@ -1386,6 +1427,7 @@ class VTKDatacubeRenderer:
                 "roiActive": bool(self._last_roi_active),
                 "roiExtraRenderMs": float(self._last_roi_extra_render_ms),
                 "roiDisabledReason": self._roi_render_activation_state()[1],
+                "roiFeatherEnabled": bool(self._roi_feather_enabled),
                 "roiGuardBypassedForTesting": bool(self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()),
                 "roiGuardBypassReason": "env-override" if (self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()) else None,
                 "selectedSliceAxis": self.slice_axis,
@@ -1877,13 +1919,26 @@ class VTKDatacubeRenderer:
                     roi_capture, _, _ = self._capture_rgb_buffer()
                     roi_capture_finished_ns = time.time_ns()
                     roi_extra_capture_ms = (roi_capture_finished_ns - roi_capture_started_ns) / 1e6
-                    self._frame_rgb_output_buffer[
-                        roi_y0 : roi_y0 + roi_h,
-                        roi_x0 : roi_x0 + roi_w,
-                    ] = roi_capture[
+                    roi_base = self._frame_rgb_output_buffer[
                         roi_y0 : roi_y0 + roi_h,
                         roi_x0 : roi_x0 + roi_w,
                     ]
+                    roi_high = roi_capture[
+                        roi_y0 : roi_y0 + roi_h,
+                        roi_x0 : roi_x0 + roi_w,
+                    ]
+                    if self._roi_feather_enabled:
+                        try:
+                            alpha = self._roi_feather_mask(roi_w, roi_h)
+                            blended = (
+                                roi_high.astype(np.float32) * alpha
+                                + roi_base.astype(np.float32) * (1.0 - alpha)
+                            )
+                            roi_base[:] = np.clip(blended, 0.0, 255.0).astype(np.uint8)
+                        except Exception:
+                            roi_base[:] = roi_high
+                    else:
+                        roi_base[:] = roi_high
                     rgb = self._frame_rgb_output_buffer
                     roi_active = True
                     roi_disabled_reason = None
@@ -1915,6 +1970,7 @@ class VTKDatacubeRenderer:
             "roiActive": bool(roi_active),
             "roiExtraRenderMs": float(roi_extra_render_ms),
             "roiDisabledReason": roi_disabled_reason,
+            "roiFeatherEnabled": bool(self._roi_feather_enabled),
             **mapper_diagnostics,
         }
         return rgb, started_ns, finished_ns, pipeline_metrics
@@ -1941,6 +1997,9 @@ class VTKDatacubeRenderer:
         self._dataset_import_details = {}
         self._frame_rgb_buffer = None
         self._frame_rgb_output_buffer = None
+        self._roi_feather_cache = None
+        self._roi_feather_cache_key = None
+        self._initial_camera_state = None
         gc.collect()
 
     def _handle_black_frame_detection(self, frame_rgb: np.ndarray) -> None:

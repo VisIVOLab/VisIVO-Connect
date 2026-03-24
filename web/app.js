@@ -25,6 +25,7 @@ const elements = {
   connectButton: document.getElementById("connectButton"),
   disconnectButton: document.getElementById("disconnectButton"),
   fullscreenButton: document.getElementById("fullscreenButton"),
+  resetViewButton: document.getElementById("resetViewButton"),
   renderScale: document.getElementById("renderScale"),
   renderScaleValue: document.getElementById("renderScaleValue"),
   bitrate: document.getElementById("bitrate"),
@@ -1587,6 +1588,15 @@ elements.autoContrastButton.addEventListener("click", () => {
   logEvent("Auto contrast preset applied");
 });
 
+elements.resetViewButton?.addEventListener("click", () => {
+  markMeaningfulSessionDirty();
+  send({
+    type: "camera.reset",
+    sessionId: state.sessionId,
+  });
+  logEvent("View reset requested");
+});
+
 elements.renderScale.addEventListener("input", () => {
   state.renderParams.scale = Number(elements.renderScale.value);
   elements.renderScaleValue.textContent = formatScale(state.renderParams.scale);
@@ -2145,6 +2155,9 @@ function handleSocketMessage(raw) {
         state.volume.slicePointerReadout = message.slicePointerReadout;
         renderScientificOverlay();
       }
+      break;
+    case "camera.reset.ack":
+      logEvent("View reset");
       break;
     case "ws-stream.started":
       state.transport.wsFallbackActive = true;

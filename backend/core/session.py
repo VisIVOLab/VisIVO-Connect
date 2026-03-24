@@ -510,6 +510,22 @@ class RemoteRenderSession:
         self._last_input_ns = time.time_ns()
         self.request_render()
 
+    def reset_camera(self) -> None:
+        slot = self._checkout_active_renderer_slot()
+        try:
+            with slot.render_lock:
+                reset_camera = getattr(slot.renderer, "reset_camera", None)
+                if callable(reset_camera):
+                    reset_camera()
+                else:
+                    renderer_obj = getattr(slot.renderer, "renderer", None)
+                    if renderer_obj is not None and hasattr(renderer_obj, "ResetCamera"):
+                        renderer_obj.ResetCamera()
+        finally:
+            self._release_renderer_slot(slot)
+        self._last_input_ns = time.time_ns()
+        self.request_render()
+
     def update_slice_pointer(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         x_norm = payload.get("xNorm", payload.get("x"))
         y_norm = payload.get("yNorm", payload.get("y"))

@@ -1561,6 +1561,19 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     session.apply_pinch(payload)
                     continue
 
+                if msg_type == "camera.reset":
+                    phase = "camera"
+                    session.reset_camera()
+                    await _safe_ws_send_json(
+                        ws,
+                        {
+                            "type": "camera.reset.ack",
+                            "sessionId": session.session_id,
+                        },
+                    )
+                    await _emit_state(ws, session, text="View reset")
+                    continue
+
                 if msg_type in {"render.mode", "visualization.mode", "visualization.switch"}:
                     phase = "render-config"
                     requested_mode = payload.get("mode")
