@@ -715,10 +715,16 @@ input {
   margin-bottom: 14px;
 }
 
+.card-heading-wrap {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
 .card-heading h2 {
   margin: 0;
   font-size: 1rem;
   letter-spacing: 0.03em;
+  min-width: 0;
 }
 
 .field {
@@ -1261,6 +1267,18 @@ output {
 .toggle-row {
   display: flex;
   gap: 12px;
+}
+
+.card-actions-wrap {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 8px;
+}
+
+.card-actions-wrap > .ghost-button,
+.card-actions-wrap > .badge {
+  flex: 0 0 auto;
 }
 
 button {
