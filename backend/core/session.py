@@ -105,6 +105,7 @@ class RemoteRenderSession:
         self._adaptive_bitrate_started = False
         self._adaptive_bitrate_min_mbps = 4.0
         self._adaptive_bitrate_max_mbps = 40.0
+        self._hq_preview_scale_clamp_max = 1.0
 
         self.peer_connection: RTCPeerConnection | None = None
         self.control_ws: Any | None = None
@@ -314,8 +315,50 @@ class RemoteRenderSession:
             return float(self.negotiated_bitrate_mbps), "pending renegotiation"
         return float(self.negotiated_bitrate_mbps), None
 
+    def _hq_scale_clamp_state(self, renderer: Any | None = None) -> dict[str, Any]:
+        active_renderer = renderer or self.renderer
+        backend = None
+        try:
+            backend = active_renderer.get_renderer_diagnostics().get("renderWindowBackend")
+        except Exception:
+            backend = None
+        backend_name = str(backend or "").strip().lower()
+        clamp_condition = bool(
+            self._is_large_dataset()
+            and self.loading_state.get("activeRepresentation") == "preview"
+            and "egl" in backend_name
+        )
+        return {
+            "hqScaleClampedForPreview": clamp_condition,
+            "hqScaleClampReason": "preview-egl-large-dataset" if clamp_condition else None,
+            "hqScaleClampMax": float(self._hq_preview_scale_clamp_max),
+        }
+
+    def _clamp_hq_render_scale_if_needed(self, renderer: Any, requested_render_scale: float) -> tuple[float, dict[str, Any]]:
+        clamp_state = self._hq_scale_clamp_state(renderer)
+        if not clamp_state["hqScaleClampedForPreview"]:
+            return requested_render_scale, clamp_state
+        profile = renderer.describe_effective_quality_profile(
+            mode="high-quality",
+            width=max(int(self.viewport.width), 1),
+            height=max(int(self.viewport.height), 1),
+            dpr=float(self.viewport.dpr),
+            requested_render_scale=float(requested_render_scale),
+        )
+        effective_scale = float(profile.get("renderScale", 0.0) or 0.0)
+        clamp_max = float(clamp_state["hqScaleClampMax"])
+        if effective_scale <= clamp_max or effective_scale <= 0.0:
+            clamp_state["hqScaleClampedForPreview"] = False
+            clamp_state["hqScaleClampReason"] = None
+            return requested_render_scale, clamp_state
+        ratio = clamp_max / effective_scale
+        return max(0.4, float(requested_render_scale) * ratio), clamp_state
+
     def _apply_renderer_scale_locked(self, renderer: Any) -> None:
-        renderer.set_user_render_scale(self._effective_viewport_scale())
+        requested_scale = self._effective_viewport_scale()
+        if self.mode == "high-quality":
+            requested_scale, _ = self._clamp_hq_render_scale_if_needed(renderer, requested_scale)
+        renderer.set_user_render_scale(requested_scale)
         renderer.resize(self.viewport.width, self.viewport.height, self.viewport.dpr)
 
     def _normalize_quality_mode(self, mode: str | None) -> str | None:
@@ -563,6 +606,7 @@ class RemoteRenderSession:
 
     def state_payload(self, text: str | None = None) -> dict[str, Any]:
         effective_bitrate_mbps, effective_bitrate_status = self._effective_bitrate_state()
+        clamp_state = self._hq_scale_clamp_state()
         slot = self._checkout_active_renderer_slot()
         try:
             with slot.render_lock:
@@ -616,6 +660,7 @@ class RemoteRenderSession:
                 "targetBitrateMbps": float(self.target_bitrate_mbps),
                 "effectiveBitrateMbps": effective_bitrate_mbps,
                 "effectiveBitrateStatus": effective_bitrate_status,
+                **clamp_state,
             },
             "datasetLoading": dict(self.loading_state),
             "sliceReference": slice_reference,
@@ -835,27 +880,47 @@ class RemoteRenderSession:
         slot = self._checkout_active_renderer_slot()
         try:
             with slot.render_lock:
-                return {
-                    "interactive": slot.renderer.describe_effective_quality_profile(
-                        mode="interactive",
-                        width=viewport_width,
-                        height=viewport_height,
-                        dpr=viewport_dpr,
-                        requested_render_scale=interactive_req.get("renderScale"),
-                        requested_sample_distance_scale=interactive_req.get("sampleDistanceScale"),
-                        requested_image_sample_distance=interactive_req.get("imageSampleDistance"),
-                        requested_bitrate_mbps=interactive_req.get("bitrateMbps"),
-                    ),
-                    "highQuality": slot.renderer.describe_effective_quality_profile(
+                interactive_profile = slot.renderer.describe_effective_quality_profile(
+                    mode="interactive",
+                    width=viewport_width,
+                    height=viewport_height,
+                    dpr=viewport_dpr,
+                    requested_render_scale=interactive_req.get("renderScale"),
+                    requested_sample_distance_scale=interactive_req.get("sampleDistanceScale"),
+                    requested_image_sample_distance=interactive_req.get("imageSampleDistance"),
+                    requested_bitrate_mbps=interactive_req.get("bitrateMbps"),
+                )
+                high_quality_profile = slot.renderer.describe_effective_quality_profile(
+                    mode="high-quality",
+                    width=viewport_width,
+                    height=viewport_height,
+                    dpr=viewport_dpr,
+                    requested_render_scale=hq_req.get("renderScale"),
+                    requested_sample_distance_scale=hq_req.get("sampleDistanceScale"),
+                    requested_image_sample_distance=hq_req.get("imageSampleDistance"),
+                    requested_bitrate_mbps=hq_req.get("bitrateMbps"),
+                )
+                clamp_state = self._hq_scale_clamp_state(slot.renderer)
+                if clamp_state["hqScaleClampedForPreview"] and float(high_quality_profile.get("renderScale", 0.0) or 0.0) > clamp_state["hqScaleClampMax"]:
+                    scale_ratio = float(clamp_state["hqScaleClampMax"]) / float(high_quality_profile["renderScale"])
+                    adjusted_render_scale = float(high_quality_profile["renderScaleInput"]) * scale_ratio
+                    high_quality_profile = slot.renderer.describe_effective_quality_profile(
                         mode="high-quality",
                         width=viewport_width,
                         height=viewport_height,
                         dpr=viewport_dpr,
-                        requested_render_scale=hq_req.get("renderScale"),
+                        requested_render_scale=adjusted_render_scale,
                         requested_sample_distance_scale=hq_req.get("sampleDistanceScale"),
                         requested_image_sample_distance=hq_req.get("imageSampleDistance"),
                         requested_bitrate_mbps=hq_req.get("bitrateMbps"),
-                    ),
+                    )
+                else:
+                    clamp_state["hqScaleClampedForPreview"] = False
+                    clamp_state["hqScaleClampReason"] = None
+                high_quality_profile = {**high_quality_profile, **clamp_state}
+                return {
+                    "interactive": interactive_profile,
+                    "highQuality": high_quality_profile,
                 }
         finally:
             self._release_renderer_slot(slot)

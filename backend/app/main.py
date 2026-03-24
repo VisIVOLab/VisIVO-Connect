@@ -1133,6 +1133,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
         return _error_response("session-not-found", "session not found", phase="metrics", status_code=404, retryable=True)
     pipeline_metrics = dict(session.latest_pipeline_metrics)
     effective_bitrate_mbps, effective_bitrate_status = session._effective_bitrate_state()
+    clamp_state = session._hq_scale_clamp_state()
     return JSONResponse(
         {
             "sessionId": session.session_id,
@@ -1198,6 +1199,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "targetBitrateMbps": float(session.target_bitrate_mbps),
                 "effectiveBitrateMbps": effective_bitrate_mbps,
                 "effectiveBitrateStatus": effective_bitrate_status,
+                **clamp_state,
             },
             "pipelineMetrics": {
                 "activeMapperClass": pipeline_metrics.get("activeMapperClass"),
@@ -1255,6 +1257,7 @@ async def session_metrics(session_id: str, request: Request) -> JSONResponse:
                 "renderHeight": pipeline_metrics.get("frameHeight"),
                 "targetViewportWidth": int(session.viewport.width),
                 "targetViewportHeight": int(session.viewport.height),
+                **clamp_state,
             },
             "datasetLoading": dict(session.loading_state),
             "sliceReference": session.renderer.get_slice_reference(),

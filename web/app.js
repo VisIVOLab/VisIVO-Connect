@@ -4214,6 +4214,9 @@ function renderMetrics(payload) {
       : "-"
   );
   setMetricByLabel("Preview bytes estimate", formatBytesEstimate(renderer.previewBytesEstimate));
+  setMetricByLabel("HQ scale clamped for preview", formatBoolean(renderer.hqScaleClampedForPreview));
+  setMetricByLabel("HQ scale clamp reason", renderer.hqScaleClampReason || "-");
+  setMetricByLabel("HQ scale clamp max", formatScale(renderer.hqScaleClampMax));
   setMetricByLabel("Memory policy", renderer.memoryPolicyApplied || "-");
   setText(elements.metricsWarmupScalarSummary, formatMs(warmup.scalarSummaryMs));
   setText(elements.metricsWarmupScalarSummaryCacheHit, formatBoolean(warmup.scalarSummaryCacheHit));
