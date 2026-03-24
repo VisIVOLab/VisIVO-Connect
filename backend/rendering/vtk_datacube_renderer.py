@@ -121,6 +121,7 @@ class VTKDatacubeRenderer:
         self.window_to_image.SetInputBufferTypeToRGB()
         self.window_to_image.ReadFrontBufferOff()
         self._frame_rgb_buffer: np.ndarray | None = None
+        self._frame_rgb_output_buffer: np.ndarray | None = None
 
         mapper_cls = getattr(vtk, "vtkGPUVolumeRayCastMapper", None)
         self.gpu_volume_mapper = mapper_cls() if mapper_cls is not None else None
@@ -205,6 +206,10 @@ class VTKDatacubeRenderer:
         )
         self.user_render_scale = 1.0
         self.interactive_boost = 1.0
+        self.roi_rendering_enabled = True
+        self._roi_scale = 0.4
+        self._last_roi_active = False
+        self._last_roi_extra_render_ms = 0.0
         self.set_profile(self.current_profile)
         self.set_visualization_mode("volume")
         self._warmup_metrics["totalRendererWarmupMs"] = (time.time_ns() - warmup_started_ns) / 1e6
@@ -1224,6 +1229,38 @@ class VTKDatacubeRenderer:
             "stabilityMode": bool(self.stability_mode),
         }
 
+    def _large_dataset_preview_egl_guard_active(self) -> bool:
+        backend_name = str(self._render_window_backend or "").strip().lower()
+        return bool(
+            self._dataset_import_details.get("largeDataset")
+            and self._dataset_import_details.get("datasetLoadMode") == "preview"
+            and "egl" in backend_name
+        )
+
+    def _roi_render_should_activate(self) -> bool:
+        return bool(
+            self.roi_rendering_enabled
+            and getattr(self.current_profile, "name", "") == "interactive"
+            and self.visualization_mode == "volume"
+            and self.volume_render_mode != "slice"
+            and not self._large_dataset_preview_egl_guard_active()
+            and self.volume_mapper is not None
+            and hasattr(self.volume_mapper, "GetImageSampleDistance")
+            and hasattr(self.volume_mapper, "SetImageSampleDistance")
+        )
+
+    def _capture_rgb_buffer(self) -> tuple[np.ndarray, int, int]:
+        self.window_to_image.Modified()
+        self.window_to_image.Update()
+        vtk_image = self.window_to_image.GetOutput()
+        width, height, _ = vtk_image.GetDimensions()
+        scalars = vtk_image.GetPointData().GetScalars()
+        arr = numpy_support.vtk_to_numpy(scalars).reshape(height, width, 3)
+        if self._frame_rgb_buffer is None or self._frame_rgb_buffer.shape != (height, width, 3):
+            self._frame_rgb_buffer = np.empty((height, width, 3), dtype=np.uint8)
+        self._frame_rgb_buffer[:] = arr[::-1]
+        return self._frame_rgb_buffer, int(width), int(height)
+
     def prewarm_volume_renderer(self) -> None:
         if self._gpu_volume_prewarmed or self.visualization_mode != "volume":
             return
@@ -1335,6 +1372,10 @@ class VTKDatacubeRenderer:
                 "axesActorVisible": bool(self.axes_actor_visible and not (self.visualization_mode == "volume" and self.volume_render_mode == "slice")),
                 "scientificLegendVisible": True,
                 "scientificLegendCompact": True,
+                "roiRenderingEnabled": bool(self.roi_rendering_enabled),
+                "roiSize": f"{float(self._roi_scale):.1f}x",
+                "roiActive": bool(self._last_roi_active),
+                "roiExtraRenderMs": float(self._last_roi_extra_render_ms),
                 "selectedSliceAxis": self.slice_axis,
                 "selectedSliceIndex": self.slice_index,
                 "selectedAxisSize": self._slice_reference.get("selectedAxisSize"),
@@ -1784,25 +1825,68 @@ class VTKDatacubeRenderer:
             self._warmup_metrics["firstVisibleRenderWarmupMs"] = (render_finished_ns - render_started_ns) / 1e6
 
         capture_started_ns = render_finished_ns
-        self.window_to_image.Modified()
-        self.window_to_image.Update()
+        rgb_base, width, height = self._capture_rgb_buffer()
         capture_finished_ns = time.time_ns()
+        capture_total_ms = (capture_finished_ns - capture_started_ns) / 1e6
 
         conversion_started_ns = capture_finished_ns
-        vtk_image = self.window_to_image.GetOutput()
-        width, height, _ = vtk_image.GetDimensions()
-        scalars = vtk_image.GetPointData().GetScalars()
-        arr = numpy_support.vtk_to_numpy(scalars).reshape(height, width, 3)
-        if self._frame_rgb_buffer is None or self._frame_rgb_buffer.shape != (height, width, 3):
-            self._frame_rgb_buffer = np.empty((height, width, 3), dtype=np.uint8)
-        self._frame_rgb_buffer[:] = arr[::-1]
-        rgb = self._frame_rgb_buffer
+        rgb = rgb_base
+        roi_extra_render_ms = 0.0
+        roi_extra_capture_ms = 0.0
+        roi_active = False
+
+        # Begin center-priority ROI render: same renderer, same render window, higher quality only
+        # for a central region, then composite back into the base frame.
+        if self._roi_render_should_activate() and width > 16 and height > 16:
+            roi_w = max(16, int(width * self._roi_scale))
+            roi_h = max(16, int(height * self._roi_scale))
+            roi_x0 = max(0, (width - roi_w) // 2)
+            roi_y0 = max(0, (height - roi_h) // 2)
+
+            if self._frame_rgb_output_buffer is None or self._frame_rgb_output_buffer.shape != (height, width, 3):
+                self._frame_rgb_output_buffer = np.empty((height, width, 3), dtype=np.uint8)
+            self._frame_rgb_output_buffer[:] = rgb_base
+
+            original_image_sample_distance = float(self.volume_mapper.GetImageSampleDistance())
+            roi_image_sample_distance = self._clamp_image_sample_distance(
+                max(1.0, original_image_sample_distance * 0.65),
+                profile_name=self.current_profile.name,
+            )
+
+            if roi_image_sample_distance < original_image_sample_distance:
+                try:
+                    roi_render_started_ns = time.time_ns()
+                    self.volume_mapper.SetImageSampleDistance(float(roi_image_sample_distance))
+                    self.render_window.Render()
+                    roi_render_finished_ns = time.time_ns()
+                    roi_extra_render_ms = (roi_render_finished_ns - roi_render_started_ns) / 1e6
+                    roi_capture_started_ns = roi_render_finished_ns
+                    roi_capture, _, _ = self._capture_rgb_buffer()
+                    roi_capture_finished_ns = time.time_ns()
+                    roi_extra_capture_ms = (roi_capture_finished_ns - roi_capture_started_ns) / 1e6
+                    self._frame_rgb_output_buffer[
+                        roi_y0 : roi_y0 + roi_h,
+                        roi_x0 : roi_x0 + roi_w,
+                    ] = roi_capture[
+                        roi_y0 : roi_y0 + roi_h,
+                        roi_x0 : roi_x0 + roi_w,
+                    ]
+                    rgb = self._frame_rgb_output_buffer
+                    roi_active = True
+                except Exception:
+                    rgb = self._frame_rgb_output_buffer
+                finally:
+                    self.volume_mapper.SetImageSampleDistance(float(original_image_sample_distance))
+        # End center-priority ROI render.
+
+        self._last_roi_active = roi_active
+        self._last_roi_extra_render_ms = float(roi_extra_render_ms)
         self._handle_black_frame_detection(rgb)
         finished_ns = time.time_ns()
         mapper_diagnostics = self._active_mapper_diagnostics()
         pipeline_metrics = {
-            "renderTimeMs": (render_finished_ns - render_started_ns) / 1e6,
-            "frameCaptureReadbackTimeMs": (capture_finished_ns - capture_started_ns) / 1e6,
+            "renderTimeMs": ((render_finished_ns - render_started_ns) / 1e6) + float(roi_extra_render_ms),
+            "frameCaptureReadbackTimeMs": float(capture_total_ms + roi_extra_capture_ms),
             "frameConversionTimeMs": (finished_ns - conversion_started_ns) / 1e6,
             "totalFramePipelineTimeMs": (finished_ns - started_ns) / 1e6,
             "frameWidth": int(width),
@@ -1810,6 +1894,10 @@ class VTKDatacubeRenderer:
             "windowWidth": int(self.window_width),
             "windowHeight": int(self.window_height),
             "qualityProfile": self.current_profile.name,
+            "roiRenderingEnabled": bool(self.roi_rendering_enabled),
+            "roiSize": f"{float(self._roi_scale):.1f}x",
+            "roiActive": bool(roi_active),
+            "roiExtraRenderMs": float(roi_extra_render_ms),
             **mapper_diagnostics,
         }
         return rgb, started_ns, finished_ns, pipeline_metrics
@@ -1834,6 +1922,8 @@ class VTKDatacubeRenderer:
         self.isosurface_pipeline = None
         self._dataset_scalar_summary = None
         self._dataset_import_details = {}
+        self._frame_rgb_buffer = None
+        self._frame_rgb_output_buffer = None
         gc.collect()
 
     def _handle_black_frame_detection(self, frame_rgb: np.ndarray) -> None:
