@@ -4217,6 +4217,11 @@ function renderMetrics(payload) {
   setMetricByLabel("HQ scale clamped for preview", formatBoolean(renderer.hqScaleClampedForPreview));
   setMetricByLabel("HQ scale clamp reason", renderer.hqScaleClampReason || "-");
   setMetricByLabel("HQ scale clamp max", formatScale(renderer.hqScaleClampMax));
+  setMetricByLabel("ROI rendering enabled", formatBoolean(renderer.roiRenderingEnabled ?? pipeline.roiRenderingEnabled));
+  setMetricByLabel("ROI size", renderer.roiSize || pipeline.roiSize || "-");
+  setMetricByLabel("ROI active", formatBoolean(pipeline.roiActive ?? renderer.roiActive));
+  setMetricByLabel("ROI extra render", formatMs(pipeline.roiExtraRenderMs ?? renderer.roiExtraRenderMs));
+  setMetricByLabel("ROI disabled reason", pipeline.roiDisabledReason || renderer.roiDisabledReason || "-");
   setMetricByLabel("Memory policy", renderer.memoryPolicyApplied || "-");
   setText(elements.metricsWarmupScalarSummary, formatMs(warmup.scalarSummaryMs));
   setText(elements.metricsWarmupScalarSummaryCacheHit, formatBoolean(warmup.scalarSummaryCacheHit));

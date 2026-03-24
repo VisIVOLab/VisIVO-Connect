@@ -210,6 +210,7 @@ class VTKDatacubeRenderer:
         self._roi_scale = 0.4
         self._last_roi_active = False
         self._last_roi_extra_render_ms = 0.0
+        self._last_roi_disabled_reason: str | None = None
         self.set_profile(self.current_profile)
         self.set_visualization_mode("volume")
         self._warmup_metrics["totalRendererWarmupMs"] = (time.time_ns() - warmup_started_ns) / 1e6
@@ -1238,16 +1239,23 @@ class VTKDatacubeRenderer:
         )
 
     def _roi_render_should_activate(self) -> bool:
-        return bool(
-            self.roi_rendering_enabled
-            and getattr(self.current_profile, "name", "") == "interactive"
-            and self.visualization_mode == "volume"
-            and self.volume_render_mode != "slice"
-            and not self._large_dataset_preview_egl_guard_active()
-            and self.volume_mapper is not None
-            and hasattr(self.volume_mapper, "GetImageSampleDistance")
-            and hasattr(self.volume_mapper, "SetImageSampleDistance")
-        )
+        active, _ = self._roi_render_activation_state()
+        return active
+
+    def _roi_render_activation_state(self) -> tuple[bool, str | None]:
+        if not self.roi_rendering_enabled:
+            return False, "roi-feature-disabled"
+        if getattr(self.current_profile, "name", "") != "interactive":
+            return False, "not-interactive-mode"
+        if self.visualization_mode != "volume" or self.volume_render_mode == "slice":
+            return False, "slice-mode"
+        if self._large_dataset_preview_egl_guard_active():
+            return False, "preview-egl-large-dataset-guard"
+        if self.volume_mapper is None:
+            return False, "mapper-unavailable"
+        if not hasattr(self.volume_mapper, "GetImageSampleDistance") or not hasattr(self.volume_mapper, "SetImageSampleDistance"):
+            return False, "mapper-missing-image-sample-distance"
+        return True, None
 
     def _capture_rgb_buffer(self) -> tuple[np.ndarray, int, int]:
         self.window_to_image.Modified()
@@ -1376,6 +1384,7 @@ class VTKDatacubeRenderer:
                 "roiSize": f"{float(self._roi_scale):.1f}x",
                 "roiActive": bool(self._last_roi_active),
                 "roiExtraRenderMs": float(self._last_roi_extra_render_ms),
+                "roiDisabledReason": self._roi_render_activation_state()[1],
                 "selectedSliceAxis": self.slice_axis,
                 "selectedSliceIndex": self.slice_index,
                 "selectedAxisSize": self._slice_reference.get("selectedAxisSize"),
@@ -1834,6 +1843,7 @@ class VTKDatacubeRenderer:
         roi_extra_render_ms = 0.0
         roi_extra_capture_ms = 0.0
         roi_active = False
+        _, roi_disabled_reason = self._roi_render_activation_state()
 
         # Begin center-priority ROI render: same renderer, same render window, higher quality only
         # for a central region, then composite back into the base frame.
@@ -1873,14 +1883,17 @@ class VTKDatacubeRenderer:
                     ]
                     rgb = self._frame_rgb_output_buffer
                     roi_active = True
+                    roi_disabled_reason = None
                 except Exception:
                     rgb = self._frame_rgb_output_buffer
+                    roi_disabled_reason = "roi-render-failed"
                 finally:
                     self.volume_mapper.SetImageSampleDistance(float(original_image_sample_distance))
         # End center-priority ROI render.
 
         self._last_roi_active = roi_active
         self._last_roi_extra_render_ms = float(roi_extra_render_ms)
+        self._last_roi_disabled_reason = roi_disabled_reason
         self._handle_black_frame_detection(rgb)
         finished_ns = time.time_ns()
         mapper_diagnostics = self._active_mapper_diagnostics()
@@ -1898,6 +1911,7 @@ class VTKDatacubeRenderer:
             "roiSize": f"{float(self._roi_scale):.1f}x",
             "roiActive": bool(roi_active),
             "roiExtraRenderMs": float(roi_extra_render_ms),
+            "roiDisabledReason": roi_disabled_reason,
             **mapper_diagnostics,
         }
         return rgb, started_ns, finished_ns, pipeline_metrics
