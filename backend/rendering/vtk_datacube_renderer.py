@@ -208,12 +208,14 @@ class VTKDatacubeRenderer:
         self.interactive_boost = 1.0
         self.roi_rendering_enabled = True
         self.allow_roi_on_egl_preview = os.getenv("VISIVO_ALLOW_ROI_ON_EGL_PREVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
-        self._roi_scale = 0.4
+        self._roi_scale = self._read_roi_size()
         self._last_roi_active = False
         self._last_roi_extra_render_ms = 0.0
         self._last_roi_disabled_reason: str | None = None
         self._roi_feather_enabled = True
-        self._roi_feather_cache_key: tuple[int, int, int, int] | None = None
+        self._roi_feather_factor = self._read_roi_feather()
+        self._last_roi_mask_cached = False
+        self._roi_feather_cache_key: tuple[int, int, float, float] | None = None
         self._roi_feather_cache: np.ndarray | None = None
         self._initial_camera_state: dict[str, Any] | None = None
         self.set_profile(self.current_profile)
@@ -1275,6 +1277,22 @@ class VTKDatacubeRenderer:
             return False, "mapper-missing-image-sample-distance"
         return True, None
 
+    def _read_roi_size(self) -> float:
+        value = os.getenv("VISIVO_ROI_SIZE", "0.4")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = 0.4
+        return min(max(parsed, 0.1), 0.9)
+
+    def _read_roi_feather(self) -> float:
+        value = os.getenv("VISIVO_ROI_FEATHER", "0.05")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = 0.05
+        return min(max(parsed, 0.01), 0.25)
+
     def _capture_rgb_buffer(self) -> tuple[np.ndarray, int, int]:
         self.window_to_image.Modified()
         self.window_to_image.Update()
@@ -1287,13 +1305,14 @@ class VTKDatacubeRenderer:
         self._frame_rgb_buffer[:] = arr[::-1]
         return self._frame_rgb_buffer, int(width), int(height)
 
-    def _roi_feather_mask(self, roi_w: int, roi_h: int) -> np.ndarray:
-        cache_key = (int(roi_w), int(roi_h), int(max(1, round(roi_w * 0.08))), int(max(1, round(roi_h * 0.08))))
+    def _roi_feather_mask(self, roi_w: int, roi_h: int, *, roi_size: float, feather: float) -> np.ndarray:
+        feather_x = max(1, min(int(round(roi_w * feather)), roi_w // 4 if roi_w > 4 else 1))
+        feather_y = max(1, min(int(round(roi_h * feather)), roi_h // 4 if roi_h > 4 else 1))
+        cache_key = (int(roi_w), int(roi_h), round(float(roi_size), 4), round(float(feather), 4))
         if self._roi_feather_cache_key == cache_key and self._roi_feather_cache is not None:
+            self._last_roi_mask_cached = True
             return self._roi_feather_cache
-
-        feather_x = max(1, min(int(round(roi_w * 0.08)), roi_w // 4 if roi_w > 4 else 1))
-        feather_y = max(1, min(int(round(roi_h * 0.08)), roi_h // 4 if roi_h > 4 else 1))
+        self._last_roi_mask_cached = False
 
         x = np.ones(roi_w, dtype=np.float32)
         y = np.ones(roi_h, dtype=np.float32)
@@ -1424,10 +1443,13 @@ class VTKDatacubeRenderer:
                 "scientificLegendCompact": True,
                 "roiRenderingEnabled": bool(self.roi_rendering_enabled),
                 "roiSize": f"{float(self._roi_scale):.1f}x",
+                "roiSizeEffective": float(self._roi_scale),
                 "roiActive": bool(self._last_roi_active),
                 "roiExtraRenderMs": float(self._last_roi_extra_render_ms),
                 "roiDisabledReason": self._roi_render_activation_state()[1],
                 "roiFeatherEnabled": bool(self._roi_feather_enabled),
+                "roiFeatherEffective": float(self._roi_feather_factor),
+                "roiMaskCached": bool(self._last_roi_mask_cached),
                 "roiGuardBypassedForTesting": bool(self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()),
                 "roiGuardBypassReason": "env-override" if (self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()) else None,
                 "selectedSliceAxis": self.slice_axis,
@@ -1888,6 +1910,7 @@ class VTKDatacubeRenderer:
         roi_extra_render_ms = 0.0
         roi_extra_capture_ms = 0.0
         roi_active = False
+        self._last_roi_mask_cached = False
         _, roi_disabled_reason = self._roi_render_activation_state()
 
         # Begin center-priority ROI render: same renderer, same render window, higher quality only
@@ -1929,7 +1952,12 @@ class VTKDatacubeRenderer:
                     ]
                     if self._roi_feather_enabled:
                         try:
-                            alpha = self._roi_feather_mask(roi_w, roi_h)
+                            alpha = self._roi_feather_mask(
+                                roi_w,
+                                roi_h,
+                                roi_size=self._roi_scale,
+                                feather=self._roi_feather_factor,
+                            )
                             blended = (
                                 roi_high.astype(np.float32) * alpha
                                 + roi_base.astype(np.float32) * (1.0 - alpha)
@@ -1967,10 +1995,13 @@ class VTKDatacubeRenderer:
             "qualityProfile": self.current_profile.name,
             "roiRenderingEnabled": bool(self.roi_rendering_enabled),
             "roiSize": f"{float(self._roi_scale):.1f}x",
+            "roiSizeEffective": float(self._roi_scale),
             "roiActive": bool(roi_active),
             "roiExtraRenderMs": float(roi_extra_render_ms),
             "roiDisabledReason": roi_disabled_reason,
             "roiFeatherEnabled": bool(self._roi_feather_enabled),
+            "roiFeatherEffective": float(self._roi_feather_factor),
+            "roiMaskCached": bool(self._last_roi_mask_cached),
             **mapper_diagnostics,
         }
         return rgb, started_ns, finished_ns, pipeline_metrics
