@@ -120,8 +120,8 @@ class VTKDatacubeRenderer:
         self.window_to_image.SetInput(self.render_window)
         self.window_to_image.SetInputBufferTypeToRGB()
         self.window_to_image.ReadFrontBufferOff()
-        self._frame_rgb_buffer: np.ndarray | None = None
-        self._frame_rgb_output_buffer: np.ndarray | None = None
+        self._frame_rgb_buffers: list[np.ndarray | None] = [None, None]
+        self._frame_rgb_buffer_index = 0
 
         mapper_cls = getattr(vtk, "vtkGPUVolumeRayCastMapper", None)
         self.gpu_volume_mapper = mapper_cls() if mapper_cls is not None else None
@@ -1305,10 +1305,14 @@ class VTKDatacubeRenderer:
         width, height, _ = vtk_image.GetDimensions()
         scalars = vtk_image.GetPointData().GetScalars()
         arr = numpy_support.vtk_to_numpy(scalars).reshape(height, width, 3)
-        if self._frame_rgb_buffer is None or self._frame_rgb_buffer.shape != (height, width, 3):
-            self._frame_rgb_buffer = np.empty((height, width, 3), dtype=np.uint8)
-        self._frame_rgb_buffer[:] = arr[::-1]
-        return self._frame_rgb_buffer, int(width), int(height)
+        buffer_index = self._frame_rgb_buffer_index
+        frame_buffer = self._frame_rgb_buffers[buffer_index]
+        if frame_buffer is None or frame_buffer.shape != (height, width, 3):
+            frame_buffer = np.empty((height, width, 3), dtype=np.uint8)
+            self._frame_rgb_buffers[buffer_index] = frame_buffer
+        frame_buffer[:] = arr[::-1]
+        self._frame_rgb_buffer_index = (buffer_index + 1) % len(self._frame_rgb_buffers)
+        return frame_buffer, int(width), int(height)
 
     def _roi_feather_mask(self, roi_w: int, roi_h: int, *, roi_size: float, feather: float) -> np.ndarray:
         feather_x = max(1, min(int(round(roi_w * feather)), roi_w // 4 if roi_w > 4 else 1))
@@ -1933,10 +1937,6 @@ class VTKDatacubeRenderer:
             roi_x0 = max(0, (width - roi_w) // 2)
             roi_y0 = max(0, (height - roi_h) // 2)
 
-            if self._frame_rgb_output_buffer is None or self._frame_rgb_output_buffer.shape != (height, width, 3):
-                self._frame_rgb_output_buffer = np.empty((height, width, 3), dtype=np.uint8)
-            self._frame_rgb_output_buffer[:] = rgb_base
-
             original_image_sample_distance = float(self.volume_mapper.GetImageSampleDistance())
             roi_image_sample_distance = self._clamp_image_sample_distance(
                 max(1.0, original_image_sample_distance * 0.65),
@@ -1954,7 +1954,7 @@ class VTKDatacubeRenderer:
                     roi_capture, _, _ = self._capture_rgb_buffer()
                     roi_capture_finished_ns = time.time_ns()
                     roi_extra_capture_ms = (roi_capture_finished_ns - roi_capture_started_ns) / 1e6
-                    roi_base = self._frame_rgb_output_buffer[
+                    roi_base = rgb_base[
                         roi_y0 : roi_y0 + roi_h,
                         roi_x0 : roi_x0 + roi_w,
                     ]
@@ -1979,11 +1979,11 @@ class VTKDatacubeRenderer:
                             roi_base[:] = roi_high
                     else:
                         roi_base[:] = roi_high
-                    rgb = self._frame_rgb_output_buffer
+                    rgb = rgb_base
                     roi_active = True
                     roi_disabled_reason = None
                 except Exception:
-                    rgb = self._frame_rgb_output_buffer
+                    rgb = rgb_base
                     roi_disabled_reason = "roi-render-failed"
                 finally:
                     self.volume_mapper.SetImageSampleDistance(float(original_image_sample_distance))
@@ -2039,8 +2039,8 @@ class VTKDatacubeRenderer:
         self.isosurface_pipeline = None
         self._dataset_scalar_summary = None
         self._dataset_import_details = {}
-        self._frame_rgb_buffer = None
-        self._frame_rgb_output_buffer = None
+        self._frame_rgb_buffers = [None, None]
+        self._frame_rgb_buffer_index = 0
         self._roi_feather_cache = None
         self._roi_feather_cache_key = None
         self._initial_camera_state = None
