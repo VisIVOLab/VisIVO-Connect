@@ -214,6 +214,7 @@ class VTKDatacubeRenderer:
         self.interactive_boost = 1.0
         self.roi_rendering_enabled = True
         self.allow_roi_on_egl_preview = os.getenv("VISIVO_ALLOW_ROI_ON_EGL_PREVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self._roi_enabled_by_user = False
         self._roi_scale = self._read_roi_size()
         self._last_roi_active = False
         self._last_roi_extra_render_ms = 0.0
@@ -1083,6 +1084,7 @@ class VTKDatacubeRenderer:
             "sampleDistanceScale": self.volume_sample_distance_scale_override,
             "imageSampleDistance": self.volume_image_sample_distance_override,
             "roiEnabled": bool(self.roi_rendering_enabled),
+            "roiEnabledByUser": bool(self._roi_enabled_by_user),
             "roiSize": float(self._roi_scale),
             "roiFeather": float(self._roi_feather_factor),
             "shade": self.volume_shade_override,
@@ -1280,13 +1282,22 @@ class VTKDatacubeRenderer:
             return False, "non-volume-mode"
         if self.volume_render_mode == "slice":
             return False, "slice-mode"
-        if self._large_dataset_preview_egl_guard_active() and not self.allow_roi_on_egl_preview:
+        if self._large_dataset_preview_egl_guard_active() and not self._roi_enabled_by_user and not self.allow_roi_on_egl_preview:
             return False, "preview-egl-large-dataset-guard"
         if self.volume_mapper is None:
             return False, "mapper-unavailable"
         if not hasattr(self.volume_mapper, "GetImageSampleDistance") or not hasattr(self.volume_mapper, "SetImageSampleDistance"):
             return False, "mapper-missing-image-sample-distance"
         return True, None
+
+    def _roi_guard_bypass_state(self) -> tuple[bool, str | None]:
+        if not self._large_dataset_preview_egl_guard_active():
+            return False, None
+        if self._roi_enabled_by_user:
+            return False, "user-enabled"
+        if self.allow_roi_on_egl_preview:
+            return True, "env-override"
+        return False, None
 
     def _read_roi_size(self) -> float:
         value = os.getenv("VISIVO_ROI_SIZE", "0.3")
@@ -1457,7 +1468,7 @@ class VTKDatacubeRenderer:
                 "scientificLegendVisible": True,
                 "scientificLegendCompact": True,
                 "roiRenderingEnabled": bool(self.roi_rendering_enabled),
-                "roiEnabledByUser": bool(self.roi_rendering_enabled),
+                "roiEnabledByUser": bool(self._roi_enabled_by_user),
                 "roiSize": f"{float(self._roi_scale):.1f}x",
                 "roiSizeEffective": float(self._roi_scale),
                 "roiActive": bool(self._last_roi_active),
@@ -1466,8 +1477,8 @@ class VTKDatacubeRenderer:
                 "roiFeatherEnabled": bool(self._roi_feather_enabled),
                 "roiFeatherEffective": float(self._roi_feather_factor),
                 "roiMaskCached": bool(self._last_roi_mask_cached),
-                "roiGuardBypassedForTesting": bool(self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()),
-                "roiGuardBypassReason": "env-override" if (self.allow_roi_on_egl_preview and self._large_dataset_preview_egl_guard_active()) else None,
+                "roiGuardBypassedForTesting": bool(self._roi_guard_bypass_state()[0]),
+                "roiGuardBypassReason": self._roi_guard_bypass_state()[1],
                 "selectedSliceAxis": self.slice_axis,
                 "selectedSliceIndex": self.slice_index,
                 "selectedAxisSize": self._slice_reference.get("selectedAxisSize"),
@@ -1548,6 +1559,8 @@ class VTKDatacubeRenderer:
                 )
         if isinstance(params.get("roiEnabled"), bool):
             self.roi_rendering_enabled = bool(params["roiEnabled"])
+        if isinstance(params.get("roiEnabledByUser"), bool):
+            self._roi_enabled_by_user = bool(params["roiEnabledByUser"])
         if isinstance(params.get("roiSize"), (int, float)):
             self._roi_scale = min(max(float(params["roiSize"]), 0.1), 0.9)
         if isinstance(params.get("roiFeather"), (int, float)):
@@ -2012,7 +2025,7 @@ class VTKDatacubeRenderer:
             "windowHeight": int(self.window_height),
             "qualityProfile": self.current_profile.name,
             "roiRenderingEnabled": bool(self.roi_rendering_enabled),
-            "roiEnabledByUser": bool(self.roi_rendering_enabled),
+            "roiEnabledByUser": bool(self._roi_enabled_by_user),
             "roiSize": f"{float(self._roi_scale):.1f}x",
             "roiSizeEffective": float(self._roi_scale),
             "roiActive": bool(roi_active),
@@ -2021,6 +2034,8 @@ class VTKDatacubeRenderer:
             "roiFeatherEnabled": bool(self._roi_feather_enabled),
             "roiFeatherEffective": float(self._roi_feather_factor),
             "roiMaskCached": bool(self._last_roi_mask_cached),
+            "roiGuardBypassedForTesting": bool(self._roi_guard_bypass_state()[0]),
+            "roiGuardBypassReason": self._roi_guard_bypass_state()[1],
             **mapper_diagnostics,
         }
         return rgb, started_ns, finished_ns, pipeline_metrics

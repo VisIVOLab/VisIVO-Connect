@@ -306,6 +306,7 @@ const state = {
     imageSampleDistance: null,
     imageSampleDistanceManual: false,
     roiEnabled: true,
+    roiEnabledByUser: false,
     roiSize: 0.3,
     roiFeather: 0.08,
     shade: true,
@@ -665,6 +666,7 @@ function buildPersistedStateSnapshot() {
       imageSampleDistance: state.volume.imageSampleDistance,
       imageSampleDistanceManual: state.volume.imageSampleDistanceManual,
       roiEnabled: state.volume.roiEnabled,
+      roiEnabledByUser: state.volume.roiEnabledByUser,
       roiSize: state.volume.roiSize,
       roiFeather: state.volume.roiFeather,
       shade: state.volume.shade,
@@ -800,6 +802,9 @@ function applyPersistedStateSnapshot(snapshot) {
     }
     if (typeof snapshot.volume.roiEnabled === "boolean") {
       state.volume.roiEnabled = snapshot.volume.roiEnabled;
+    }
+    if (typeof snapshot.volume.roiEnabledByUser === "boolean") {
+      state.volume.roiEnabledByUser = snapshot.volume.roiEnabledByUser;
     }
     if (Number.isFinite(snapshot.volume.roiSize)) {
       state.volume.roiSize = clampFloat(Number(snapshot.volume.roiSize), 0.2, 0.5, state.volume.roiSize);
@@ -1753,6 +1758,7 @@ if (elements.volumeRenderFidelity) {
 
 elements.roiEnabled?.addEventListener("change", () => {
   state.volume.roiEnabled = Boolean(elements.roiEnabled.checked);
+  state.volume.roiEnabledByUser = state.volume.roiEnabled;
   syncRoiControlsUI();
   sendRenderParams();
 });
@@ -3790,6 +3796,9 @@ function mergeVolumeParams(incoming) {
   if (typeof incoming.roiEnabled === "boolean") {
     state.volume.roiEnabled = incoming.roiEnabled;
   }
+  if (typeof incoming.roiEnabledByUser === "boolean") {
+    state.volume.roiEnabledByUser = incoming.roiEnabledByUser;
+  }
   if (Number.isFinite(incoming.roiSize)) {
     state.volume.roiSize = clampFloat(Number(incoming.roiSize), 0.2, 0.5, state.volume.roiSize);
   }
@@ -3878,6 +3887,7 @@ function buildVolumeParamsPayload() {
   payload.sampleDistanceScale = effectiveVolumeSampleDistanceScale(state.renderMode);
   payload.imageSampleDistance = effectiveVolumeImageSampleDistance(state.renderMode);
   payload.roiEnabled = Boolean(state.volume.roiEnabled);
+  payload.roiEnabledByUser = Boolean(state.volume.roiEnabledByUser);
   payload.roiSize = clampFloat(Number(state.volume.roiSize), 0.2, 0.5, 0.3);
   payload.roiFeather = clampFloat(Number(state.volume.roiFeather), 0.02, 0.12, 0.08);
   return payload;
